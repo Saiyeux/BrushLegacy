@@ -1,0 +1,39 @@
+# BrushLegacy Configuration
+
+models:
+  painttransformer: "models/220_net_g.pth"
+  u2net: "models/u2net.pth"           # 176 MB, not needed for inference-only
+
+# Canvas settings (match physical setup)
+canvas:
+  width_px: 512
+  height_px: 512
+  width_mm: 480        # physical canvas width  (mm)
+  height_mm: 480       # physical canvas height (mm)
+
+# PaintTransformer inference
+stroke:
+  patch_size: 32
+  stroke_num: 8
+  p_dim: 16            # stroke parameter dimensions
+  layers: [3, 4, 5]   # brush sizes: large → small
+
+# Robot coordinate conversion (franka_new / RT box)
+robot:
+  canvas_side_m: 0.48       # physical canvas side length (m) — matches side0 in original code
+  canvas_image_size: 512    # pixel size used for coordinate normalisation
+  calibration_matrix: "data/calibration/matrix.npy"     # end-effector transform
+  calibration_xyz: "data/calibration/xyz_rotated2.npy"  # canvas plane in robot frame
+  home_joints: [0.0244, 0.1669, -0.4169, -2.046, 0.0831, 2.1966, 0.3484]
+
+# Trajectory
+trajectory:
+  hover_z: 0.15     # hover height above canvas (m)
+  paint_z_offset: 0.005
+  speed: 0.65       # air-motion speed (m/s)
+
+# Visualization
+visualization:
+  dpi: 150
+  figsize: [12, 8]
+  save_format: "png"

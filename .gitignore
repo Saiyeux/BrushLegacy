@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+venv/
+.venv/
+env/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Generated stroke data (re-runnable)
+data/strokes/*.csv
+data/trajectories/*.npz
+data/trajectories/*.png
+data/output/*.png
+
+# Calibration data (machine-specific, tracked separately)
+data/calibration/*.npy
+data/calibration/*.json
+
+# Model weights (large binary files — download separately)
+models/*.pth
+models/*.pt
+models/*.onnx
+
+# Keep directory structure
+!data/strokes/.gitkeep
+!data/trajectories/.gitkeep
+!data/output/.gitkeep
+!data/calibration/.gitkeep
+!data/input/.gitkeep
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Jupyter
+.ipynb_checkpoints/
