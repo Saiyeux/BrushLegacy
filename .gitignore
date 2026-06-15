@@ -1,3 +1,6 @@
+# ─── Local config (copy from config.template.yaml and edit locally) ───────────
+config.yaml
+
 # ─── Generated data (re-runnable) ─────────────────────────────────────────────
 data/strokes/
 data/trajectories/

@@ -1,4 +1,6 @@
-# BrushLegacy Configuration
+# BrushLegacy Configuration Template
+# Copy to config.yaml and fill in your local values.
+# config.yaml is gitignored — edit freely without affecting others.
 
 models:
   painttransformer: "models/220_net_g.pth"
@@ -20,9 +22,9 @@ stroke:
 
 # Palette calibration parameters (measure physically and fill in)
 palette:
-  cell_width_mm: 30       # grid cell width  (column direction, Red → Yellow)
-  cell_height_mm: 30      # grid cell height (row direction, Red → Orange)
-  dip_depth_mm: 8         # how many mm to descend below hover-1 when dipping paint
+  cell_width_mm: 28    # column pitch Red → Yellow (measured)
+  cell_height_mm: 34   # row pitch Red → Orange (measured)
+  dip_depth_mm: 8      # how many mm to descend below hover-1 when dipping paint
 
 # Motion speeds (all MotionGenerator/Cartesian; halved from Cobrush Pro reference)
 speeds:
@@ -35,10 +37,10 @@ speeds:
 # Robot coordinate conversion (franka_new / RT box)
 robot:
   ip: "192.170.10.200"
-  canvas_side_m: 0.48       # physical canvas side length (m) — matches side0 in original code
+  canvas_side_m: 0.48       # physical canvas side length (m)
   canvas_image_size: 512    # pixel size used for coordinate normalisation
-  calibration_matrix: "data/calibration/matrix.npy"     # end-effector transform
-  calibration_xyz: "data/calibration/xyz_rotated2.npy"  # canvas plane in robot frame
+  calibration_matrix: "data/calibration/matrix.npy"
+  calibration_xyz: "data/calibration/xyz_rotated2.npy"
   home_joints: [0.0244, 0.1669, -0.4169, -2.046, 0.0831, 2.1966, 0.3484]
 
 # Trajectory

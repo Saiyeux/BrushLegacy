@@ -62,7 +62,7 @@ CONE_N_ROT   = 2     # default number of full rotations
 def cone_sweep(api, q_center: np.ndarray,
                n_rot: int     = CONE_N_ROT,
                amp_deg: float = CONE_AMP_DEG,
-               speed: float   = CONE_SPEED) -> None:
+               speed: float   = 0.5) -> None:
     """Execute conical sweep as a single continuous robot_control call.
 
     Uses JointVelocities callback — J5 and J6 rotate at `speed` rad/s in
