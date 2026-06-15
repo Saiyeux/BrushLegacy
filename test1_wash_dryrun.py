@@ -16,6 +16,7 @@ import numpy as np
 sys.path.insert(0, "src")
 from wash_action import cone_trajectory, CONE_SPEED, DIP_SPEED, CONE_AMP_DEG, CONE_N_ROT
 from config_loader import robot_ip
+from pyfranka.franka_pybind import MotionGenerator
 
 
 def main():
@@ -53,8 +54,9 @@ def main():
     waypoints = cone_trajectory(q_now, n_rot=args.n, amp_deg=args.amp)
     print(f"  开始扫掠 ({len(waypoints)} 个路点) …")
 
-    for i, wp in enumerate(waypoints):
-        api.joint_go(wp.tolist(), speed=CONE_SPEED)
+    for wp in waypoints:
+        mg = MotionGenerator(CONE_SPEED, wp.tolist())
+        api.robot_control(joint_positions_handle=mg.operator)
 
     print("  ✓ 完成。调整 --n / --amp 后再次运行。\n")
 

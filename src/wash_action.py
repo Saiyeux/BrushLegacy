@@ -47,6 +47,7 @@ import time
 from pathlib import Path
 
 import numpy as np
+from pyfranka.franka_pybind import MotionGenerator
 
 # ── Motion parameters ─────────────────────────────────────────────────────────
 J5_IDX = 4          # 0-indexed joint indices for Franka Panda
@@ -126,7 +127,8 @@ def do_wash(api, cal: dict,
     def go(q, speed, label=""):
         if verbose:
             print(f"  [wash] {label}")
-        api.joint_go(q.tolist(), speed=speed)
+        mg = MotionGenerator(speed, q.tolist())
+        api.robot_control(joint_positions_handle=mg.operator)
 
     # 1. Approach
     go(q_hover, HOVER_SPEED, "→ transit to water cup hover")
@@ -142,7 +144,8 @@ def do_wash(api, cal: dict,
               f"({steps} steps/rot)")
     waypoints = cone_trajectory(q_dip, n_rot=n_rot, amp_deg=amp_deg, steps=steps)
     for wp in waypoints:
-        api.joint_go(wp.tolist(), speed=CONE_SPEED)
+        mg = MotionGenerator(CONE_SPEED, wp.tolist())
+        api.robot_control(joint_positions_handle=mg.operator)
 
     # 4. Lift
     go(q_dip,   DIP_SPEED,   "↑ re-centre")

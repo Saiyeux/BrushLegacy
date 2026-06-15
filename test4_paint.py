@@ -30,6 +30,7 @@ from palette_cfg   import PALETTE_NAMES, DEFAULT_CAL_PATH
 from wash_action   import cone_trajectory, do_wash, CONE_SPEED, DIP_SPEED, HOVER_SPEED
 from test3_dip_wash import dip_slot, wash   # reuse dip + wash logic
 from config_loader import robot_ip
+from pyfranka.franka_pybind import CartesianVelocities, CartesianVelocitiesFinished
 
 
 ACTION_PAINT = 0
@@ -164,10 +165,23 @@ def execute(api, npz_path: str, palette_cal: dict, canvas: dict,
                       f"  slot={current_slot}  RGB=({r},{g},{b})")
 
             if not dry_run:
-                api.lin_go(T_hover.tolist(),   speed=TRANSIT_SPEED)  # transit
-                api.lin_go(T_start.tolist(),   speed=DIP_SPEED)      # lower
-                api.lin_go(T_end.tolist(),     speed=PAINT_SPEED)    # stroke
-                api.lin_go(T_hover.tolist(),   speed=DIP_SPEED)      # lift
+                for T_tgt, spd in [
+                    (T_hover, TRANSIT_SPEED),
+                    (T_start, DIP_SPEED),
+                    (T_end,   PAINT_SPEED),
+                    (T_hover, DIP_SPEED),
+                ]:
+                    p_goal = np.array(T_tgt[:3, 3])
+                    def _cb(rs, period, _p=p_goal, _s=spd):
+                        T_c = np.array(rs.O_T_EE).reshape(4, 4, order='F')
+                        err = _p - T_c[:3, 3]
+                        d = np.linalg.norm(err)
+                        if d < 0.001:
+                            return CartesianVelocitiesFinished(
+                                CartesianVelocities([0, 0, 0, 0, 0, 0]))
+                        v = (err / d) * min(_s, d * 3.0)
+                        return CartesianVelocities(v.tolist() + [0, 0, 0])
+                    api.robot_control(cartesian_velocities_handle=_cb)
 
     print(f"\n  ✓ 完成  {paint_count} 笔\n")
 

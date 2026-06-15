@@ -28,6 +28,7 @@ sys.path.insert(0, "src")
 from palette_cfg import PALETTE_RGB, PALETTE_NAMES, N_SLOTS, DEFAULT_CAL_PATH
 from wash_action  import cone_trajectory, CONE_SPEED, DIP_SPEED, HOVER_SPEED
 from config_loader import robot_ip
+from pyfranka.franka_pybind import MotionGenerator, CartesianVelocities, CartesianVelocitiesFinished
 
 
 def _swatch(r, g, b):
@@ -36,18 +37,30 @@ def _swatch(r, g, b):
 
 def _go_joint(api, q, speed, label=""):
     print(f"    → {label}")
-    api.joint_go(q if isinstance(q, list) else q.tolist(), speed=speed)
+    q_list = q if isinstance(q, list) else q.tolist()
+    mg = MotionGenerator(speed, q_list)
+    api.robot_control(joint_positions_handle=mg.operator)
 
 
 def _go_cart(api, xyz, hover_T, hover_xyz, speed, label=""):
-    """Move EE to target_xyz by applying delta from hover_T (Cartesian line)."""
+    """Move EE to target_xyz keeping orientation from hover_T (P-controller)."""
     print(f"    → {label}  {[f'{v:.4f}' for v in xyz]}")
-    # Build target SE3: copy hover_T rotation, update translation
-    T = np.array(hover_T, dtype=np.float64)
-    T[0, 3] = xyz[0]
-    T[1, 3] = xyz[1]
-    T[2, 3] = xyz[2]
-    api.lin_go(T.tolist(), speed=speed)
+    T_goal = np.array(hover_T, dtype=np.float64).copy()
+    T_goal[0, 3] = xyz[0]
+    T_goal[1, 3] = xyz[1]
+    T_goal[2, 3] = xyz[2]
+    p_goal = T_goal[:3, 3]
+
+    def callback(robot_state, period):
+        T_curr = np.array(robot_state.O_T_EE).reshape(4, 4, order='F')
+        err = p_goal - T_curr[:3, 3]
+        dist = np.linalg.norm(err)
+        if dist < 0.001:
+            return CartesianVelocitiesFinished(CartesianVelocities([0, 0, 0, 0, 0, 0]))
+        v = (err / dist) * min(speed, dist * 3.0)
+        return CartesianVelocities(v.tolist() + [0, 0, 0])
+
+    api.robot_control(cartesian_velocities_handle=callback)
 
 
 def dip_slot(api, cal, slot_idx, ref_hover_T):
@@ -106,7 +119,8 @@ def wash(api, cal, n_rot, amp_deg):
     wps = cone_trajectory(q_dip, n_rot=n_rot, amp_deg=amp_deg)
     print(f"    → cone sweep  {n_rot} rot × {amp_deg}°  ({len(wps)} pts)")
     for wp in wps:
-        api.joint_go(wp.tolist(), speed=CONE_SPEED)
+        mg = MotionGenerator(CONE_SPEED, wp.tolist())
+        api.robot_control(joint_positions_handle=mg.operator)
 
     _go_joint(api, q_dip,   DIP_SPEED,   "re-centre")
     _go_joint(api, q_hover, DIP_SPEED,   "lift out")
