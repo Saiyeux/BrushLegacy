@@ -52,9 +52,8 @@ import numpy as np
 J5_IDX = 4          # 0-indexed joint indices for Franka Panda
 J6_IDX = 5
 
-HOVER_SPEED  = 1.0   # fast transit to/from water cup
-DIP_SPEED    = 0.15  # slow descent into / ascent from water
-CONE_SPEED   = 0.08  # very slow during the conical sweep
+HOVER_SPEED  = 0.4   # transit speed (matches Cobrush Pro v=0.4)
+DIP_SPEED    = 0.1   # slow descent into / ascent from paint or water (v_local)
 SOAK_SEC     = 0.3   # pause after dipping before starting to sweep
 DRIP_SEC     = 3.0   # wait at hover after sweep for water to drip off
 
