@@ -58,6 +58,15 @@ def _transit_z(cal) -> float:
 
 # ── Low-level motion helpers ──────────────────────────────────────────────────
 
+def go_home(api, speed: float | None = None) -> None:
+    """Move to home joint position defined in config.yaml [robot.home_joints]."""
+    from config_loader import load_config
+    cfg = load_config()
+    q   = cfg["robot"]["home_joints"]
+    spd = speed if speed is not None else _speeds()["hover"]
+    _joint_go(api, q, spd, "go home")
+
+
 def _joint_go(api, q, speed: float, label: str = "") -> None:
     from pyfranka.franka_pybind import MotionGenerator
     if label:
