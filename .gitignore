@@ -1,49 +1,46 @@
-# Python
+# ─── Generated data (re-runnable) ─────────────────────────────────────────────
+data/strokes/
+data/trajectories/
+data/output/
+data/calibration/
+
+# ─── Model weights & checkpoints ──────────────────────────────────────────────
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+*.bin
+
+# ─── NumPy / calibration / stroke data ────────────────────────────────────────
+*.npy
+*.npz
+*.csv
+
+# ─── Python ───────────────────────────────────────────────────────────────────
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
-*.pyd
-.Python
+.eggs/
 *.egg-info/
 dist/
 build/
-.eggs/
-venv/
-.venv/
-env/
 
-# macOS
+# ─── Logs & temp ──────────────────────────────────────────────────────────────
+*.log
+*.tmp
+*.bak
+
+# ─── Packaged archives ────────────────────────────────────────────────────────
+*.zip
+
+# ─── OS ───────────────────────────────────────────────────────────────────────
 .DS_Store
-.AppleDouble
-.LSOverride
+Thumbs.db
 
-# Generated stroke data (re-runnable)
-data/strokes/*.csv
-data/trajectories/*.npz
-data/trajectories/*.png
-data/output/*.png
-
-# Calibration data (machine-specific, tracked separately)
-data/calibration/*.npy
-data/calibration/*.json
-
-# Model weights (large binary files — download separately)
-models/*.pth
-models/*.pt
-models/*.onnx
-
-# Keep directory structure
-!data/strokes/.gitkeep
-!data/trajectories/.gitkeep
-!data/output/.gitkeep
-!data/calibration/.gitkeep
-!data/input/.gitkeep
-
-# IDE
+# ─── IDE ──────────────────────────────────────────────────────────────────────
 .vscode/
 .idea/
 *.swp
-*.swo
 
-# Jupyter
-.ipynb_checkpoints/
+# ─── Claude Code internal ─────────────────────────────────────────────────────
+.claude/

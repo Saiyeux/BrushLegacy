@@ -1,23 +1,22 @@
 """
-stroke_gen.py — Direct image → sorted 8D stroke CSV (no ML inference)
+stroke_gen.py — Layer 1: image → painterly brush-stroke data + rendered preview
 
-Algorithm:
-  For each layer (coarse → fine) we overlay a regular grid on the canvas.
-  Each grid cell gets ONE stroke whose:
-    • colour  = dominant palette colour in that cell
-    • position = cell centre
-    • angle   = perpendicular to local image gradient (painterly direction)
-    • length  = 1.3 × cell size   (slightly longer than cell for overlap)
-    • width   = 0.45 × cell size
+Approach: grid-based, actual image colours (not palette-quantised).
+Each cell gets one stroke coloured by the mean RGB of the source pixels in that cell.
+Palette quantisation is deferred to traj_calc.py (robot execution only).
 
-  Layer grid sizes (at 256-px canvas):
-    layer 3  — 6×6   grid  → 36  strokes, cell≈43 px
-    layer 4  — 10×10 grid  → 100 strokes, cell≈26 px
-    layer 5  — 14×14 grid  → 196 strokes, cell≈18 px
-  Total ≤ 332; --max_strokes cap subsamples each layer proportionally.
+Three layers, large → fine:
+  Layer 3  6×6   ≈85 px/cell  — block in main colour areas
+  Layer 4  14×14 ≈37 px/cell  — fill colour transitions
+  Layer 5  20×20 ≈26 px/cell  — refine edges
 
-Output: {stem}_layer_0{3,4,5}_sorted.csv
-        columns: x, y, w, h, θ, r, g, b  — same as stroke_convert.py
+Stroke shape: wide near-square ellipse at high alpha → solid colour blocks
+that tile together to approximate the original image (PaintTransformer style).
+Angle follows local gradient so strokes align with edges.
+
+Outputs:
+  data/strokes/{stem}_layer_0{3,4,5}_sorted.csv   — x,y,w,h,θ,r,g,b
+  data/output/{stem}_painted.png                   — rendered painting preview
 
 Usage:
     python src/stroke_gen.py --image data/input/Tiger.png
@@ -33,7 +32,7 @@ import cv2
 import numpy as np
 import pandas as pd
 
-# ── 24-colour palette (must match stroke_optimize.py) ────────────────────────
+# ── 24-colour palette (used only when exporting robot NPZ, not for rendering) ─
 COLOR_CENTERS = [
     (  0,   0,   0), (128, 128, 128), (255, 255, 255),
     (  0, 200,   0), (200,   0,   0), (150,   0, 200),
@@ -44,138 +43,152 @@ COLOR_CENTERS = [
     (100, 180, 255), (255, 200, 100), (255, 255, 150), (255, 150, 200),
 ]
 
-CANVAS = 256   # all stroke coords live in [0, CANVAS] space
+CANVAS_PX = 512   # rendering canvas and stroke coordinate space
 
-# Grid sizes per layer (n × n cells)
-# layer 3 = 6×6  = 36  large  cells (≈42 px each at 256-px canvas)
-# layer 4 = 12×12 = 144 medium cells (≈21 px each)
-# layer 5 = 16×16 = 256 fine   cells (≈16 px each) — subsampled to budget
-LAYER_GRIDS = {3: 6, 4: 14, 5: 20}
+# Per-layer parameters
+#   n_grid  : grid dimension (n×n cells)
+#   len_r   : stroke length = cell_size × len_r
+#   wid_r   : stroke width  = cell_size × wid_r
+#   alpha   : blend opacity — high (≥0.90) for solid opaque colour blocks
+#   blur    : GaussianBlur kernel for soft edges (applied to rotated-rect mask)
+LAYER_CFG = {
+    3: dict(n_grid=6,  len_r=1.60, wid_r=0.75, alpha=0.96, blur=5),
+    4: dict(n_grid=14, len_r=1.50, wid_r=0.70, alpha=0.92, blur=3),
+    5: dict(n_grid=20, len_r=1.40, wid_r=0.65, alpha=0.87, blur=2),
+}
 
-
-# ── colour quantisation ───────────────────────────────────────────────────────
-
-def quantize(img_rgb: np.ndarray) -> np.ndarray:
-    """Resize to CANVAS×CANVAS; return palette-index map (H×W int)."""
-    img  = cv2.resize(img_rgb, (CANVAS, CANVAS), interpolation=cv2.INTER_AREA)
-    flat = img.reshape(-1, 3).astype(np.float32)
-    pal  = np.array(COLOR_CENTERS, dtype=np.float32)
-    d2   = np.sum((flat[:, None] - pal[None])**2, axis=2)
-    return np.argmin(d2, axis=1).reshape(CANVAS, CANVAS)
+COLS = ["x", "y", "w", "h", "θ", "r", "g", "b"]
 
 
-# ── gradient helpers ──────────────────────────────────────────────────────────
+# ── Colour sampling ───────────────────────────────────────────────────────────
+
+def _cell_color(img_rgb: np.ndarray,
+                y1: int, y2: int, x1: int, x2: int) -> tuple[int, int, int]:
+    """Mean RGB of the source image patch (actual colour, not palette-snapped)."""
+    patch = img_rgb[y1:y2, x1:x2]
+    if patch.size == 0:
+        return (255, 255, 255)
+    m = patch.mean(axis=(0, 1))
+    return (int(round(m[0])), int(round(m[1])), int(round(m[2])))
+
+
+def _is_near_white(r: int, g: int, b: int, thr: int = 240) -> bool:
+    """True if the cell colour is essentially white canvas — skip it."""
+    return r > thr and g > thr and b > thr
+
+
+# ── Gradient angle ────────────────────────────────────────────────────────────
 
 def _cell_angle(gray_patch: np.ndarray) -> float:
-    """Stroke angle from local gradient (perpendicular to edge direction)."""
+    """Stroke direction perpendicular to dominant local edge (Sobel)."""
     if gray_patch.size < 4:
         return 0.0
     ksize = 3 if min(gray_patch.shape) >= 3 else 1
     gx = cv2.Sobel(gray_patch, cv2.CV_64F, 1, 0, ksize=ksize)
     gy = cv2.Sobel(gray_patch, cv2.CV_64F, 0, 1, ksize=ksize)
     mx, my = float(gx.mean()), float(gy.mean())
-    mag = math.hypot(mx, my)
-    if mag < 0.5:           # uniform cell → horizontal stroke
+    if math.hypot(mx, my) < 0.5:
         return 0.0
-    # Brush stroke direction is perpendicular to gradient
     angle = math.atan2(mx, -my)
-    # Normalise to (−π/2, π/2]
     angle = angle % math.pi
     if angle > math.pi / 2:
         angle -= math.pi
     return angle
 
 
-# ── grid-based stroke extraction ──────────────────────────────────────────────
+# ── Soft elliptical stroke renderer ──────────────────────────────────────────
 
-def extract_layer(img_rgb: np.ndarray, cidx: np.ndarray,
-                  n_grid: int) -> list[dict]:
-    """Horizontal strip strokes — merge adjacent same-colour cells in each row.
+def _draw_stroke(canvas: np.ndarray,
+                 cx: float, cy: float,
+                 length: float, width: float,
+                 angle_rad: float,
+                 rgb: tuple,
+                 alpha: float,
+                 blur: int) -> None:
+    """Alpha-blend a rotated-rectangle brush stroke onto canvas (RGB, in-place).
 
-    Each row is scanned left-to-right; contiguous runs of the same palette
-    colour become ONE long stroke (彩条).  This produces far fewer, longer
-    strokes than the per-cell approach and avoids the mosaic look.
+    Uses cv2.boxPoints so the stroke looks like a flat painted patch,
+    not a circular blob.  A small GaussianBlur softens only the edges.
     """
-    H, W = cidx.shape
-    cell_h = H / n_grid
-    cell_w = W / n_grid
+    H, W = canvas.shape[:2]
+    mask = np.zeros((H, W), dtype=np.uint8)
+    rect = ((cx, cy), (float(length), float(width)), math.degrees(angle_rad))
+    box  = cv2.boxPoints(rect)
+    box  = np.round(box).astype(np.int32)
+    cv2.fillPoly(mask, [box], 255)
+    if blur >= 2:
+        kk = max(3, blur | 1)
+        sigma = blur / 3.0
+        mf = cv2.GaussianBlur(mask, (kk, kk), sigma).astype(np.float32) / 255.0
+    else:
+        mf = mask.astype(np.float32) / 255.0
+    w  = mf * alpha
+    r, g, b = rgb
+    for c, col in enumerate((r, g, b)):
+        canvas[:, :, c] = np.clip(
+            canvas[:, :, c] * (1.0 - w) + col * w, 0, 255
+        ).astype(np.uint8)
+
+
+# ── Per-layer extraction ──────────────────────────────────────────────────────
+
+def extract_layer(img_rgb: np.ndarray, cfg: dict) -> list[dict]:
+    """One stroke per grid cell, coloured by actual mean image colour.
+
+    Returns list of dicts with keys: x, y, w, h, θ, r, g, b.
+    Near-white cells are skipped (canvas shows through as highlight).
+    """
+    n      = cfg["n_grid"]
+    H, W   = img_rgb.shape[:2]     # CANVAS_PX × CANVAS_PX
+    cell_h = H / n
+    cell_w = W / n
+    cell   = (cell_h + cell_w) / 2.0
+    length = cell * cfg["len_r"]
+    width  = cell * cfg["wid_r"]
+    gray   = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2GRAY).astype(np.float32)
 
     strokes = []
-    for gy in range(n_grid):
-        y1 = int(gy * cell_h);  y2 = int((gy + 1) * cell_h)
-        cy = (y1 + y2) / 2.0
-
-        # Dominant colour for every cell in this row
-        row_ci = []
-        for gx in range(n_grid):
-            x1c = int(gx * cell_w);  x2c = int((gx + 1) * cell_w)
-            patch = cidx[y1:y2, x1c:x2c]
-            if patch.size == 0:
-                row_ci.append(2)  # treat empty as white (skip)
+    for gy in range(n):
+        for gx in range(n):
+            y1 = int(gy * cell_h);  y2 = int((gy + 1) * cell_h)
+            x1 = int(gx * cell_w);  x2 = int((gx + 1) * cell_w)
+            r, g, b = _cell_color(img_rgb, y1, y2, x1, x2)
+            if _is_near_white(r, g, b):
                 continue
-            vals, cnts = np.unique(patch.flatten(), return_counts=True)
-            row_ci.append(int(vals[np.argmax(cnts)]))
-
-        # Merge adjacent same-colour cells into one horizontal strip
-        gx = 0
-        while gx < n_grid:
-            ci = row_ci[gx]
-            if ci == 2:   # pure White — skip
-                gx += 1
-                continue
-            # Find run end
-            run_end = gx + 1
-            while run_end < n_grid and row_ci[run_end] == ci:
-                run_end += 1
-            # Strip spans cells [gx, run_end)
-            x1s = int(gx * cell_w)
-            x2s = int(run_end * cell_w)
-            cx = (x1s + x2s) / 2.0
-            strip_w = (x2s - x1s) * 1.02   # full horizontal span
-            strip_h = cell_h * 1.08          # cell height with slight overlap
-            r, g, b = COLOR_CENTERS[ci]
-            strokes.append(dict(
-                x=cx, y=cy,
-                w=strip_w,
-                h=strip_h,
-                θ=0.0,       # axis-aligned horizontal strip
-                r=r, g=g, b=b,
-                area=strip_w * strip_h,
-            ))
-            gx = run_end
-
+            cx    = (x1 + x2) / 2.0
+            cy    = (y1 + y2) / 2.0
+            angle = _cell_angle(gray[y1:y2, x1:x2])
+            strokes.append(dict(x=cx, y=cy, w=length, h=width,
+                                θ=angle, r=r, g=g, b=b))
     return strokes
 
 
-# ── subsampling ───────────────────────────────────────────────────────────────
+# ── Subsampling ───────────────────────────────────────────────────────────────
 
 def _subsample(strokes: list[dict], n: int) -> list[dict]:
-    """Evenly subsample to n strokes preserving spatial distribution."""
     if n <= 0 or len(strokes) <= n:
         return strokes
     idx = np.round(np.linspace(0, len(strokes) - 1, n)).astype(int)
     return [strokes[i] for i in idx]
 
 
-# ── write CSV ─────────────────────────────────────────────────────────────────
-
-COLS = ['x', 'y', 'w', 'h', 'θ', 'r', 'g', 'b']
-
+# ── CSV I/O ───────────────────────────────────────────────────────────────────
 
 def save_layer(strokes: list[dict], path: str) -> int:
     if not strokes:
         return 0
-    rows = [[int(round(s['x'])), int(round(s['y'])),
-             max(2, int(round(s['w']))), max(1, int(round(s['h']))),
-             float(s['θ']), int(s['r']), int(s['g']), int(s['b'])]
+    rows = [[round(s["x"], 1), round(s["y"], 1),
+             round(s["w"], 1), round(s["h"], 1),
+             round(s["θ"], 6),
+             int(s["r"]), int(s["g"]), int(s["b"])]
             for s in strokes]
     df = pd.DataFrame(rows, columns=COLS)
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(path, index=False, encoding='utf-8-sig', float_format='%.6f')
+    df.to_csv(path, index=False)
     return len(df)
 
 
-# ── main ──────────────────────────────────────────────────────────────────────
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 def generate(image_path: str, outdir: str, max_strokes: int = 300) -> dict[int, str]:
     t0 = time.perf_counter()
@@ -184,41 +197,50 @@ def generate(image_path: str, outdir: str, max_strokes: int = 300) -> dict[int, 
     if img is None:
         raise FileNotFoundError(f"Cannot read: {image_path}")
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img_rgb = cv2.resize(img_rgb, (CANVAS_PX, CANVAS_PX), interpolation=cv2.INTER_AREA)
 
-    cidx = quantize(img_rgb)
+    raw3 = extract_layer(img_rgb, LAYER_CFG[3])
+    raw4 = extract_layer(img_rgb, LAYER_CFG[4])
+    raw5 = extract_layer(img_rgb, LAYER_CFG[5])
 
-    # Budgets: layer3 and layer4 always fill their full grids (complete coverage).
-    # Remaining budget goes to layer5 fine details.
-    n3 = LAYER_GRIDS[3] ** 2   # 36
-    n4 = LAYER_GRIDS[4] ** 2   # 144
-    n5 = LAYER_GRIDS[5] ** 2   # 256
-    budgets = {
-        3: n3,                              # always full
-        4: n4,                              # always full
-        5: max(0, max_strokes - n3 - n4),   # remainder
-    }
+    s3 = raw3
+    s4 = raw4
+    s5 = _subsample(raw5, max(0, max_strokes - len(s3) - len(s4)))
 
+    # Base coat: fill canvas with the mean image colour so any gaps between
+    # strokes look painted rather than blank white.
+    mean_bgr = img_rgb.reshape(-1, 3).mean(axis=0).round().astype(np.uint8)
+    canvas = np.tile(mean_bgr, (CANVAS_PX, CANVAS_PX, 1))
     stem   = Path(image_path).stem
     outdir = Path(outdir)
     paths  = {}
 
-    for lay, n_grid in LAYER_GRIDS.items():
-        raw = extract_layer(img_rgb, cidx, n_grid)
-        sampled = _subsample(raw, budgets[lay])
+    for lay, strokes in [(3, s3), (4, s4), (5, s5)]:
+        cfg = LAYER_CFG[lay]
+        for s in strokes:
+            _draw_stroke(canvas,
+                         s["x"], s["y"], s["w"], s["h"], s["θ"],
+                         (s["r"], s["g"], s["b"]),
+                         cfg["alpha"], cfg["blur"])
         p = outdir / f"{stem}_layer_{lay:02d}_sorted.csv"
-        n_saved = save_layer(sampled, str(p))
-        print(f"[stroke_gen] layer {lay}: {n_saved} strokes  ({p.name})")
-        if n_saved:
+        n = save_layer(strokes, str(p))
+        print(f"[stroke_gen] layer {lay}: {n} strokes  ({p.name})")
+        if n:
             paths[lay] = str(p)
 
-    ms = (time.perf_counter() - t0) * 1000
-    total = sum(budgets.values())
-    print(f"[stroke_gen] {total} total  ({ms:.0f} ms)")
+    out_img = Path(outdir).parent / "output" / f"{stem}_painted.png"
+    out_img.parent.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(out_img), cv2.cvtColor(canvas, cv2.COLOR_RGB2BGR))
+
+    ms    = (time.perf_counter() - t0) * 1000
+    total = len(s3) + len(s4) + len(s5)
+    print(f"[stroke_gen] {total} strokes  ({ms:.0f} ms)")
+    print(f"[stroke_gen] painted → {out_img}")
     return paths
 
 
 def main():
-    p = argparse.ArgumentParser(description="Image → sorted stroke CSV (no ML)")
+    p = argparse.ArgumentParser()
     p.add_argument("--image",       required=True)
     p.add_argument("--outdir",      default="data/strokes")
     p.add_argument("--max_strokes", type=int, default=300)

@@ -1,42 +1,58 @@
 """
-calibrate_palette.py — Record physical paint-slot positions for the robot.
+calibrate_palette.py — Record ONE reference palette slot + water cup position.
 
-For each colour slot the script records TWO poses:
-  1. HOVER  — brush safely above the slot, high enough not to touch paint
-  2. DIP    — brush touching the paint (the load position)
+Physical setup
+--------------
+  Palette: 3×8 grid, 6 paint colours at every 4th column (col 0 and col 4).
 
-These match exactly what do_palette() in Cobrush Pro's primitives.py expects:
-  joint_go(q_hover)      → fast approach
-  joint_go(q_dip)        → slow dip
-  sleep(HOLD_SEC)        → load paint
-  joint_go(q_hover)      → slow lift
+     col0   col1  col2  col3   col4  col5  col6  col7
+row0: [R]   [ ]   [ ]   [ ]   [G]   [ ]   [ ]   [ ]
+row1: [Y]   [ ]   [ ]   [ ]   [O]   [ ]   [ ]   [ ]
+row2: [B]   [ ]   [ ]   [ ]   [P]   [ ]   [ ]   [ ]
 
-Supports 6 / 12 / 24 physical colour slots.  When fewer than 24 slots are
-used, the script automatically computes the nearest-colour mapping from all 24
-palette entries to the available physical slots (nearest Euclidean RGB).
+  Only ONE slot needs to be physically calibrated.  All other slot positions
+  are derived from the row/column pitch (SLOT_PITCH_X, SLOT_PITCH_Y in palette_cfg.py).
 
-Usage:
-    # On the RT box with robot connected:
-    python src/calibrate_palette.py --colors 12 --ip 192.170.10.200
+  Water cup: a separate container the robot shakes in to clean the brush.
 
-    # Manual XYZ entry — no robot needed (joint angles will be missing):
-    python src/calibrate_palette.py --colors 12 --manual
+Workflow
+--------
+1. Choose which slot to calibrate as the reference (default: slot 0 = Red).
+2. Hand-guide robot to HOVER above that slot → press Enter.
+3. Hand-guide robot to DIP into the paint → press Enter.
+4. Hand-guide robot to HOVER above the water cup → press Enter.
+5. Hand-guide robot to DIP into the water → press Enter.
+6. Optionally verify by printing all computed slot positions.
 
-    # View an existing calibration file:
-    python src/calibrate_palette.py --show data/calibration/palette_12.npy
+Output: data/calibration/palette.npy
+  {
+    ref_slot      : int          # which slot was physically calibrated
+    ref_hover_xyz : [x,y,z]     # hover above reference slot
+    ref_dip_xyz   : [x,y,z]     # dip into reference slot
+    ref_hover_q   : [7]  | None # joint angles at hover (if robot connected)
+    ref_dip_q     : [7]  | None # joint angles at dip
+    hover_z_offset: float       # Z difference between hover and dip
+    slot_pitch_xy : [dx, dy]    # metres per grid column / row
+    water_cup_xyz : [x,y,z]     # dip position inside water cup
+    water_hover_xyz: [x,y,z]    # hover above water cup
+    water_hover_q : [7]  | None
+    water_dip_q   : [7]  | None
+  }
 
-Workflow per slot
------------------
-1. The script prints the target colour (name, RGB, ANSI swatch).
-2. You hand-guide the robot (hold wrist guide button) ABOVE the slot.
-   Press Enter → records q_hover + pos_hover.
-3. You hand-guide the robot DOWN into the paint.
-   Press Enter → records q_dip + pos_dip.
-4. The script moves to the next slot.
+Usage
+-----
+  # Robot connected (RT box):
+  python src/calibrate_palette.py --ref_slot 0 --ip 192.170.10.200
 
-Output: data/calibration/palette_N.npy
-  Stored as a dict (np.save with allow_pickle=True).
-  Compatible with do_palette() in Cobrush Pro's motion/primitives.py.
+  # Manual XYZ entry (no robot needed, e.g. on MacBook):
+  python src/calibrate_palette.py --ref_slot 0 --manual
+
+  # Custom pitch (default 35mm × 35mm):
+  python src/calibrate_palette.py --manual --pitch_x 0.040 --pitch_y 0.035
+
+  # Show a saved calibration:
+  python src/calibrate_palette.py --show
+  python src/calibrate_palette.py --show data/calibration/palette.npy
 """
 
 import argparse
@@ -45,90 +61,40 @@ from pathlib import Path
 
 import numpy as np
 
+from palette_cfg import (
+    PALETTE_RGB, PALETTE_NAMES, SLOT_GRID, N_SLOTS,
+    SLOT_PITCH_X, SLOT_PITCH_Y,
+    slot_xyz, all_slot_positions,
+    DEFAULT_CAL_PATH,
+    save_palette_cal,
+)
+
 ROOT = Path(__file__).resolve().parent.parent
 
-# ── 24-colour palette — must match COLOR_CENTERS in stroke_gen.py ─────────────
-# (palette_index, display_name, RGB)
-PALETTE_24: list[tuple[int, str, tuple[int, int, int]]] = [
-    ( 0, "Black",       (  0,   0,   0)),
-    ( 1, "Gray",        (128, 128, 128)),
-    ( 2, "White",       (255, 255, 255)),
-    ( 3, "Green",       (  0, 200,   0)),
-    ( 4, "Red",         (200,   0,   0)),
-    ( 5, "Purple",      (150,   0, 200)),
-    ( 6, "Blue",        (  0, 120, 255)),
-    ( 7, "Orange",      (255, 165,   0)),
-    ( 8, "Yellow",      (255, 255,   0)),
-    ( 9, "HotPink",     (255, 100, 180)),
-    (10, "DarkGreen",   (  0, 100,   0)),
-    (11, "DarkRed",     (100,   0,   0)),
-    (12, "DarkPurple",  (100,   0, 150)),
-    (13, "RoyalBlue",   (  0,  80, 200)),
-    (14, "Brown",       (150,  80,   0)),
-    (15, "Olive",       (150, 150,   0)),
-    (16, "Crimson",     (200,  50, 120)),
-    (17, "LightGreen",  (150, 255, 150)),
-    (18, "Salmon",      (255, 100, 100)),
-    (19, "LightPurple", (200, 100, 255)),
-    (20, "SkyBlue",     (100, 180, 255)),
-    (21, "Gold",        (255, 200, 100)),
-    (22, "LightYellow", (255, 255, 150)),
-    (23, "LightPink",   (255, 150, 200)),
-]
 
-# ── Predefined colour subsets (indices into PALETTE_24) ───────────────────────
-# Chosen to cover the widest gamut while minimising slot count.
-# These are the physical colours you put in the tray.
-
-SUBSET_6 = [0, 2, 4, 3, 6, 7]
-# Black, White, Red, Green, Blue, Orange
-
-SUBSET_12 = [0, 1, 2, 4, 3, 5, 6, 7, 8, 11, 14, 18]
-# Black, Gray, White, Red, Green, Purple, Blue, Orange,
-# Yellow, DarkRed, Brown, Salmon
-
-SUBSET_24 = list(range(24))
-
-SUBSETS = {6: SUBSET_6, 12: SUBSET_12, 24: SUBSET_24}
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Display helpers ───────────────────────────────────────────────────────────
 
 def _swatch(r: int, g: int, b: int) -> str:
-    """Three coloured spaces via ANSI 24-bit colour."""
     return f"\033[48;2;{r};{g};{b}m   \033[0m"
 
 
-def _xyz(arr) -> str:
-    return f"[{arr[0]:.4f}, {arr[1]:.4f}, {arr[2]:.4f}]"
+def _fmt_xyz(xyz) -> str:
+    return f"[{xyz[0]:.4f}, {xyz[1]:.4f}, {xyz[2]:.4f}]"
 
 
-def compute_mapping(subset: list[int]) -> np.ndarray:
-    """Return int32 array of shape (24,) where mapping[i] = slot_index.
-
-    Slot index is the position of the nearest palette colour in `subset`.
-    Distance metric: Euclidean RGB.
-    """
-    slot_rgbs = np.array([PALETTE_24[i][2] for i in subset], dtype=float)
-    all_rgbs  = np.array([e[2] for e in PALETTE_24], dtype=float)
-    d2 = np.sum((all_rgbs[:, None] - slot_rgbs[None])**2, axis=2)
-    return np.argmin(d2, axis=1).astype(np.int32)
+def _fmt_q(q) -> str:
+    if q is None:
+        return "—"
+    return "[" + ", ".join(f"{v:.4f}" for v in q) + "]"
 
 
-# ── Robot helpers ─────────────────────────────────────────────────────────────
-
-def _read_robot_state(api) -> tuple[np.ndarray, list[float]]:
-    """Return (pos_xyz, q_joints) from current robot state."""
-    st = api.readOnce()
-    T  = np.array(st.O_T_EE).reshape(4, 4, order='F')
-    return T[:3, 3].copy(), list(st.q)
-
+# ── Robot interface ───────────────────────────────────────────────────────────
 
 def _connect_robot(ip: str):
     try:
-        from pyfranka.franka_pybind import FrankaApi, RobotMode
+        from pyfranka.franka_pybind import FrankaApi
     except ImportError:
-        print("[ERROR] pyfranka not available on this machine. Use --manual.")
+        print("[ERROR] pyfranka not available. Use --manual.")
         sys.exit(1)
     api = FrankaApi()
     api.init_config(ip, log_size=1000)
@@ -140,242 +106,213 @@ def _connect_robot(ip: str):
     return api
 
 
-# ── Recording ─────────────────────────────────────────────────────────────────
-
-def _record_pose_robot(api, prompt: str) -> tuple[np.ndarray, list[float]]:
-    """Show current EE position; wait for Enter; return (pos, q)."""
-    pos, q = _read_robot_state(api)
-    print(f"     EE now: {_xyz(pos)}")
-    input(f"     {prompt}  Press Enter to record… ")
-    pos, q = _read_robot_state(api)
-    print(f"     Recorded: {_xyz(pos)}")
-    return pos, q
+def _read_ee(api) -> tuple[np.ndarray, list[float]]:
+    st = api.readOnce()
+    T  = np.array(st.O_T_EE).reshape(4, 4, order='F')
+    return T[:3, 3].copy(), list(st.q)
 
 
-def _record_pose_manual(prompt: str) -> tuple[np.ndarray, None]:
-    """Prompt user to type XYZ; return (pos, None) — no joint angles."""
+def _record_robot(api, prompt: str) -> tuple[np.ndarray, list[float]]:
+    xyz, q = _read_ee(api)
+    print(f"     Current EE: {_fmt_xyz(xyz)}")
+    input(f"     {prompt}  [Press Enter to record] ")
+    xyz, q = _read_ee(api)
+    print(f"     Recorded:   {_fmt_xyz(xyz)}")
+    return xyz, q
+
+
+def _record_manual(prompt: str) -> tuple[np.ndarray, None]:
     print(f"     {prompt}  Enter x y z (metres, space-separated):")
     while True:
-        raw = input("     x y z → ").strip()
-        parts = raw.split()
+        parts = input("     x y z → ").strip().split()
         if len(parts) == 3:
             try:
                 return np.array([float(p) for p in parts]), None
             except ValueError:
                 pass
-        print("     ✗  Need 3 floats, e.g.  0.450 0.123 0.035")
+        print("     Need 3 floats, e.g.  0.720  0.281  0.200")
 
 
-# ── Main calibration loop ─────────────────────────────────────────────────────
+# ── Main calibration ──────────────────────────────────────────────────────────
 
-def calibrate(n_colors: int, ip: str | None, manual: bool,
-              out_path: Path) -> None:
-    subset = SUBSETS[n_colors]
-    n      = len(subset)
+def calibrate(ref_slot: int, ip: str | None, manual: bool,
+              pitch_x: float, pitch_y: float, out_path: Path) -> None:
+    r, g, b = PALETTE_RGB[ref_slot]
+    name    = PALETTE_NAMES[ref_slot]
 
     print(f"\n{'='*64}")
-    print(f"  Palette calibration  —  {n} colour slots")
+    print(f"  Palette calibration — reference slot {ref_slot}: "
+          f"{_swatch(r, g, b)} {name}  RGB=({r},{g},{b})")
+    print(f"  Grid: 3×8,  col pitch={pitch_x*1000:.1f} mm, "
+          f"row pitch={pitch_y*1000:.1f} mm")
     print(f"  Output → {out_path}")
     print(f"{'='*64}\n")
 
-    # Print slot plan
-    print(f"  {'Slot':>4}  {'#':>3}  {'Name':<14}  {'RGB':<22}  Swatch")
-    print(f"  {'─'*54}")
-    for s, pi in enumerate(subset):
-        _, name, rgb = PALETTE_24[pi]
-        print(f"  {s:4d}  #{pi:<2d}  {name:<14}  {str(rgb):<22}  {_swatch(*rgb)}")
-    print()
-
-    # Connect robot (or not)
     api = None
     if not manual:
         if ip is None:
-            print("[ERROR] Provide --ip or use --manual")
+            print("[ERROR] Provide --ip or use --manual.")
             sys.exit(1)
         api = _connect_robot(ip)
         print("  TIP: Hold the wrist guide button to hand-guide the robot.\n"
               "       Release before pressing Enter to record.\n")
     else:
-        print("  Manual mode — entering XYZ coordinates only.\n"
-              "  Joint angles will not be recorded (palette moves need robot).\n")
+        print("  Manual mode — type XYZ from a measurement tool or teach pendant.\n"
+              "  Joint angles will not be recorded.\n")
 
-    slots_out: list[dict] = []
+    record = _record_robot if api else _record_manual
 
-    for slot_idx, pi in enumerate(subset):
-        _, name, rgb = PALETTE_24[pi]
-        sw = _swatch(*rgb)
+    # ── Step 1 & 2: Reference slot ────────────────────────────────────────────
+    print(f"  ─── Step 1/4: HOVER above reference slot ({name}) ───")
+    hover_xyz, hover_q = record(api if api else None,
+                                f"Guide to HOVER above {name} slot.")
 
-        print(f"\n{'─'*64}")
-        print(f"  Slot {slot_idx} / {n-1}   {sw}  {name}  RGB={rgb}")
-        print(f"{'─'*64}")
+    print(f"\n  ─── Step 2/4: DIP into reference slot ({name}) ───")
+    dip_xyz, dip_q = record(api if api else None,
+                            f"Guide to DIP into {name} paint.")
 
-        # ── Step 1: HOVER position ────────────────────────────────────────────
-        print("\n  [1/2] HOVER — guide brush above slot (safe height, not touching paint)")
-        if api is not None:
-            pos_hover, q_hover = _record_pose_robot(api, "Guide to HOVER position.")
-        else:
-            pos_hover, q_hover = _record_pose_manual("HOVER position above slot:")
+    hover_z_offset = float(hover_xyz[2] - dip_xyz[2])
+    print(f"\n  hover_z_offset = {hover_z_offset*1000:.1f} mm  "
+          f"(hover Z − dip Z)")
 
-        # ── Step 2: DIP position ──────────────────────────────────────────────
-        print("\n  [2/2] DIP   — guide brush into the paint")
-        if api is not None:
-            pos_dip, q_dip = _record_pose_robot(api, "Guide to DIP position (into paint).")
-        else:
-            pos_dip, q_dip = _record_pose_manual("DIP position (into paint):")
+    # ── Step 3 & 4: Water cup ─────────────────────────────────────────────────
+    # Wash motion is a J5+J6 conical sweep (computed at runtime).
+    # Only TWO positions needed: hover above cup, and tip touching water centre.
+    print(f"\n  ─── Step 3/4: HOVER above water cup ───")
+    water_hover_xyz, water_hover_q = record(api if api else None,
+                                            "Guide to HOVER above the water cup.")
 
-        entry = {
-            "name":      name,
-            "rgb":       np.array(rgb, dtype=np.uint8),
-            "palette_idx": int(pi),
-            # Fields used by do_palette() in Cobrush Pro primitives.py:
-            "pos_hover": pos_hover,
-            "q_hover":   np.array(q_hover) if q_hover is not None else None,
-            "pos":       pos_dip,
-            "q_dip":     np.array(q_dip)   if q_dip   is not None else None,
-        }
-        slots_out.append(entry)
-        print(f"\n  ✓  Slot {slot_idx} ({name}) saved.")
+    print(f"\n  ─── Step 4/4: DIP — brush tip touching water at centre ───")
+    print("      (brush vertical or at your normal painting angle,")
+    print("       tip just touching the water surface centre)")
+    water_dip_xyz, water_dip_q = record(api if api else None,
+                                        "Guide brush tip INTO the water (centre position).")
 
-    # ── Build output dict ─────────────────────────────────────────────────────
-    mapping = compute_mapping(subset)
-
-    out_data: dict = {
-        "n_slots": n,
-        "slots":   slots_out,             # list, index = slot_idx
-        "mapping": mapping,               # (24,) int32: mapping[palette_i] = slot_idx
-        "subset":  np.array(subset, dtype=np.int32),
+    # ── Build calibration dict ────────────────────────────────────────────────
+    cal = {
+        "ref_slot":        ref_slot,
+        "ref_hover_xyz":   hover_xyz.tolist(),
+        "ref_dip_xyz":     dip_xyz.tolist(),
+        "ref_hover_q":     hover_q,
+        "ref_dip_q":       dip_q,
+        "hover_z_offset":  hover_z_offset,
+        "slot_pitch_xy":   [pitch_x, pitch_y],
+        "water_hover_xyz": water_hover_xyz.tolist(),
+        "water_cup_xyz":   water_dip_xyz.tolist(),
+        "water_hover_q":   water_hover_q,
+        "water_dip_q":     water_dip_q,
     }
 
-    # Backward-compat: keep "black" key for paint.py's pd.get("black")
-    for idx, pi in enumerate(subset):
-        if pi == 0:  # palette index 0 = Black
-            out_data["black"] = slots_out[idx]
-            break
+    save_palette_cal(cal, str(out_path))
+    _print_summary(cal, pitch_x, pitch_y)
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    np.save(str(out_path), out_data)
 
-    # ── Summary ───────────────────────────────────────────────────────────────
-    print(f"\n{'='*64}")
-    print(f"  Saved → {out_path}")
-    _print_mapping(slots_out, mapping)
-    print(f"{'='*64}\n")
+def _print_summary(cal: dict, pitch_x: float = SLOT_PITCH_X,
+                   pitch_y: float = SLOT_PITCH_Y) -> None:
+    ref       = cal["ref_slot"]
+    ref_dip   = cal["ref_dip_xyz"]
+    hover_off = cal["hover_z_offset"]
+
+    print(f"\n  {'='*64}")
+    print(f"  Computed slot positions  (ref=slot {ref}, "
+          f"pitch x={pitch_x*1000:.1f} mm y={pitch_y*1000:.1f} mm)")
+    print(f"  {'─'*64}")
+    print(f"  {'Slot':>4}  Swatch  {'Name':<10}  "
+          f"{'Dip XYZ (m)':<40}  Hover Z (m)")
+    print(f"  {'─'*64}")
+    for i in range(N_SLOTS):
+        r, g, b = PALETTE_RGB[i]
+        name    = PALETTE_NAMES[i]
+        row, col = SLOT_GRID[i]
+        ref_row, ref_col = SLOT_GRID[ref]
+        dip_xyz = [
+            ref_dip[0] + (col - ref_col) * pitch_x,
+            ref_dip[1] + (row - ref_row) * pitch_y,
+            ref_dip[2],
+        ]
+        hover_z = dip_xyz[2] + hover_off
+        marker = " ← ref" if i == ref else ""
+        print(f"  {i:4d}   {_swatch(r,g,b)}  {name:<10}  "
+              f"{_fmt_xyz(dip_xyz):<40}  {hover_z:.4f}{marker}")
+
+    water = cal["water_cup_xyz"]
+    water_h = cal["water_hover_xyz"]
+    print(f"\n  Water cup:")
+    print(f"    hover: {_fmt_xyz(water_h)}")
+    print(f"    dip:   {_fmt_xyz(water)}")
+    print(f"  {'='*64}\n")
 
 
 # ── Show existing calibration ─────────────────────────────────────────────────
 
-def show(path: Path) -> None:
+def show_cal(path: Path) -> None:
     if not path.exists():
         print(f"[ERROR] Not found: {path}")
         sys.exit(1)
-    cal     = np.load(str(path), allow_pickle=True).item()
-    n       = int(cal["n_slots"])
-    slots   = cal["slots"]
-    mapping = cal["mapping"]
-
-    print(f"\n  Palette calibration: {path.name}  ({n} slots)\n")
-    print(f"  {'Slot':>4}  {'Swatch'}  {'Name':<14}  {'RGB':<22}  "
-          f"{'Hover XYZ':<36}  Dip XYZ")
-    print(f"  {'─'*110}")
-    for s, entry in enumerate(slots):
-        rgb   = tuple(int(v) for v in entry["rgb"])
-        ph    = entry["pos_hover"]
-        pd    = entry["pos"]
-        ph_s  = _xyz(ph) if ph is not None else "—"
-        pd_s  = _xyz(pd) if pd is not None else "—"
-        print(f"  {s:4d}   {_swatch(*rgb)}  {entry['name']:<14}  {str(rgb):<22}  "
-              f"{ph_s:<36}  {pd_s}")
-
-    print()
-    _print_mapping(slots, mapping)
-
-
-def _print_mapping(slots: list[dict], mapping: np.ndarray) -> None:
-    print(f"\n  Nearest-colour mapping (all 24 palette → physical slot)\n")
-    print(f"  {'Palette colour':<32}  {'Swatch'}  → {'Slot':>4}  Physical slot")
-    print(f"  {'─'*64}")
-    for pi, (_, pname, prgb) in enumerate(PALETTE_24):
-        slot_idx  = int(mapping[pi])
-        slot_name = slots[slot_idx]["name"]
-        slot_rgb  = tuple(int(v) for v in slots[slot_idx]["rgb"])
-        mark = "←same" if slot_rgb == prgb else ""
-        print(f"  #{pi:<2d} {pname:<14} {str(prgb):<16}  {_swatch(*prgb)}  → "
-              f"{slot_idx:4d}  {slot_name}  {mark}")
-
-
-# ── Lookup helper (importable by execution scripts) ───────────────────────────
-
-def load_palette(path: str | Path) -> dict:
-    """Load palette.npy and return a callable for colour lookup.
-
-    Returns the raw calibration dict.  Use palette_entry(r, g, b) to get
-    the slot dict compatible with do_palette() in Cobrush Pro.
-
-    Example:
-        cal = load_palette("data/calibration/palette_12.npy")
-        entry = palette_entry(cal, 150, 80, 0)   # Brown stroke
-        do_palette(api, entry, "stroke 5")
-    """
-    return np.load(str(path), allow_pickle=True).item()
-
-
-def palette_entry(cal: dict, r: int, g: int, b: int) -> dict:
-    """Given stroke RGB, return the nearest physical slot entry dict.
-
-    The entry dict has keys: q_hover, pos_hover, q_dip, pos, rgb, name.
-    Compatible with do_palette() in Cobrush Pro's motion/primitives.py.
-    """
-    mapping = cal["mapping"]
-    slots   = cal["slots"]
-    rgb     = np.array([r, g, b], dtype=float)
-    all_rgbs = np.array([e[2] for e in PALETTE_24], dtype=float)
-    palette_idx = int(np.argmin(np.sum((all_rgbs - rgb) ** 2, axis=1)))
-    slot_idx    = int(mapping[palette_idx])
-    return slots[slot_idx]
+    cal = np.load(str(path), allow_pickle=True).item()
+    print(f"\n  Palette calibration: {path}")
+    px, py = cal.get("slot_pitch_xy", [SLOT_PITCH_X, SLOT_PITCH_Y])
+    _print_summary(cal, px, py)
+    print(f"  ref_hover_q:  {_fmt_q(cal.get('ref_hover_q'))}")
+    print(f"  ref_dip_q:    {_fmt_q(cal.get('ref_dip_q'))}")
+    print(f"  water_hover_q:{_fmt_q(cal.get('water_hover_q'))}")
+    print(f"  water_dip_q:  {_fmt_q(cal.get('water_dip_q'))}\n")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def main():
     p = argparse.ArgumentParser(
-        description="Record paint-slot positions for the robot palette",
+        description="Calibrate palette reference slot + water cup",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Slot layouts
-  6 colours:  Black White Red Green Blue Orange
- 12 colours:  + Gray Purple Yellow DarkRed Brown Salmon
- 24 colours:  full palette
+Slot numbering (3×8 grid, colours at col 0 and col 4):
+  0=Red  1=Yellow  2=Blue  3=Green  4=Orange  5=Purple
 
-Examples
-  # RT box, 12-colour tray:
-  python src/calibrate_palette.py --colors 12 --ip 192.170.10.200
+Examples:
+  # RT box — calibrate slot 0 (Red) as reference:
+  python src/calibrate_palette.py --ref_slot 0 --ip 192.170.10.200
 
-  # MacBook, manual coordinates:
-  python src/calibrate_palette.py --colors 6 --manual
+  # MacBook — manual XYZ entry:
+  python src/calibrate_palette.py --ref_slot 0 --manual
 
   # Review saved calibration:
-  python src/calibrate_palette.py --show data/calibration/palette_12.npy
+  python src/calibrate_palette.py --show
+
+Steps recorded (4 total):
+  1. HOVER above reference slot
+  2. DIP into reference slot
+  3. HOVER above water cup
+  4. DIP into water (centre)
+
+Wash motion (conical sweep) is computed at runtime from step 4 — no
+extra shake positions needed.
 """)
-    p.add_argument("--colors", type=int, choices=[6, 12, 24], default=12,
-                   help="Number of physical paint slots (default 12)")
-    p.add_argument("--ip",     default=None,
-                   help="Robot IP (e.g. 192.170.10.200) — required unless --manual")
+    p.add_argument("--ref_slot", type=int, default=0,
+                   choices=range(N_SLOTS),
+                   help="Which slot to physically calibrate as reference (default 0 = Red)")
+    p.add_argument("--ip",  default=None,
+                   help="Robot IP address (required unless --manual)")
     p.add_argument("--manual", action="store_true",
-                   help="Enter XYZ manually — no robot connection required")
-    p.add_argument("--out",    default=None, metavar="PATH",
-                   help="Output .npy path  (default: data/calibration/palette_N.npy)")
-    p.add_argument("--show",   default=None, metavar="FILE",
-                   help="Load and display an existing calibration file, then exit")
+                   help="Enter XYZ manually — no robot connection needed")
+    p.add_argument("--pitch_x", type=float, default=SLOT_PITCH_X,
+                   help=f"Column pitch in metres (default {SLOT_PITCH_X})")
+    p.add_argument("--pitch_y", type=float, default=SLOT_PITCH_Y,
+                   help=f"Row pitch in metres (default {SLOT_PITCH_Y})")
+    p.add_argument("--out", default=None,
+                   help="Output path (default: data/calibration/palette.npy)")
+    p.add_argument("--show", nargs="?", const=DEFAULT_CAL_PATH,
+                   metavar="FILE",
+                   help="Show an existing calibration file and exit")
     args = p.parse_args()
 
-    if args.show:
-        show(Path(args.show))
+    if args.show is not None:
+        show_cal(Path(args.show))
         return
 
-    out_path = (Path(args.out) if args.out
-                else ROOT / "data" / "calibration" / f"palette_{args.colors}.npy")
-
-    calibrate(args.colors, args.ip, args.manual, out_path)
+    out_path = Path(args.out) if args.out else ROOT / DEFAULT_CAL_PATH
+    calibrate(args.ref_slot, args.ip, args.manual,
+              args.pitch_x, args.pitch_y, out_path)
 
 
 if __name__ == "__main__":

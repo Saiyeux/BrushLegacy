@@ -68,8 +68,32 @@ def _load_cobrush_pro(data) -> dict:
                 canvas_width=w, canvas_height=h, format="cobrush_pro")
 
 
+def _load_brushlegacy_v2(data) -> dict:
+    """Load brushlegacy_v2 action-sequence NPZ (produced by traj_calc.py)."""
+    n  = int(data["n_actions"])
+    W  = int(data["canvas_width"])
+    H  = int(data["canvas_height"])
+    types   = data["action_types"]           # (N,) int32
+    curves  = data["curves"]                 # (N,2,2) float32
+    colors  = data["colors"]                 # (N,3) uint8
+    widths  = data["widths"]                 # (N,) float32
+    slots   = data["slots"]                  # (N,) int32
+    pal_rgb = data.get("palette_colors", None)
+    pal_names = data.get("palette_names", None)
+    return dict(
+        n=n, canvas_width=W, canvas_height=H,
+        action_types=types, curves=curves,
+        colors=colors, widths=widths, slots=slots,
+        palette_colors=pal_rgb, palette_names=pal_names,
+        format="brushlegacy_v2",
+    )
+
+
 def load_npz(path: str) -> dict:
     data = np.load(path, allow_pickle=True)
+    fmt  = str(data.get("format", b"")) if "format" in data else ""
+    if "brushlegacy_v2" in fmt or ("n_actions" in data and "action_types" in data):
+        return _load_brushlegacy_v2(data)
     if "n_curves" in data:
         return _load_cobrush_pro(data)
     if "q_end1" in data or "end2tip" in data:
@@ -141,12 +165,172 @@ TYPE_COLORS = {0: "#1f77b4", 1: "#ff7f0e", 2: "#2ca02c", 3: "#d62728"}
 TYPE_LABELS = {0: "long", 1: "split_long", 2: "short", 3: "tiny"}
 
 
-def plot_cobrush_pro(npz_info: dict, out_path: str) -> None:
-    """Visualise BrushLegacy curves NPZ as trajectory-style thick coloured lines.
+def plot_brushlegacy_v2(npz_info: dict, out_path: str) -> None:
+    """Visualise brushlegacy_v2 action-sequence NPZ.
 
-    Paint strokes are drawn as thick coloured lines (brush colour).
-    Transit moves between strokes are shown as thin dashed grey lines.
-    This matches the traj_vis aesthetic: show where the robot goes, not a flat mosaic.
+    Three sub-plots:
+      Left   — trajectory map: paint strokes (coloured) + transit (dashed grey)
+               + dip (★) / wash (≈) event markers down the right edge.
+      Centre — painted result: strokes rendered as rotated rectangles.
+      Right  — action timeline: vertical bar coloured by palette slot,
+               with wash/dip events marked.
+    """
+    import math
+    import cv2  # noqa: F811
+
+    ACTION_PAINT, ACTION_DIP, ACTION_WASH = 0, 1, 2
+
+    types  = npz_info["action_types"]
+    curves = npz_info["curves"]
+    colors = npz_info["colors"]
+    widths = npz_info["widths"]
+    slots  = npz_info["slots"]
+    W      = npz_info["canvas_width"]
+    H      = npz_info["canvas_height"]
+    n_all  = npz_info["n"]
+
+    pal_rgb   = npz_info.get("palette_colors")
+    pal_names = npz_info.get("palette_names")
+
+    # Paint-action indices
+    paint_idx = [i for i in range(n_all) if int(types[i]) == ACTION_PAINT]
+    n_paint   = len(paint_idx)
+
+    # ── Left: trajectory map ──────────────────────────────────────────────────
+    traj = np.full((H, W, 3), 245, dtype=np.uint8)
+    cv2.rectangle(traj, (0, 0), (W - 1, H - 1), (160, 160, 160), 1)
+
+    prev_end = None
+    for i in paint_idx:
+        pts = curves[i].astype(np.float32)
+        p0  = (int(round(pts[0, 0])), int(round(pts[0, 1])))
+        p1  = (int(round(pts[1, 0])), int(round(pts[1, 1])))
+        if prev_end is not None:
+            dx = p0[0] - prev_end[0];  dy = p0[1] - prev_end[1]
+            dist = max(1, int(np.hypot(dx, dy)))
+            for t in range(0, dist, 10):
+                t0 = t / dist;  t1 = min((t + 6) / dist, 1.0)
+                a  = (int(prev_end[0] + dx * t0), int(prev_end[1] + dy * t0))
+                b  = (int(prev_end[0] + dx * t1), int(prev_end[1] + dy * t1))
+                cv2.line(traj, a, b, (195, 195, 195), 1, cv2.LINE_AA)
+        prev_end = p1
+
+    for k, i in enumerate(paint_idx):
+        r, g, b = int(colors[i, 0]), int(colors[i, 1]), int(colors[i, 2])
+        col_vis = (max(0, r - 50), max(0, g - 50), max(0, b - 50))
+        pts = curves[i].astype(np.float32)
+        p0  = (int(round(pts[0, 0])), int(round(pts[0, 1])))
+        p1  = (int(round(pts[1, 0])), int(round(pts[1, 1])))
+        cv2.line(traj, p0, p1, col_vis, 2, cv2.LINE_AA)
+        cv2.circle(traj, p0, 2, col_vis, -1, cv2.LINE_AA)
+
+    # ── Centre: painted result ────────────────────────────────────────────────
+    if [int(colors[i, 0]) for i in paint_idx]:
+        mean_c = np.array([[colors[i] for i in paint_idx]]).mean(axis=1)[0].round().astype(np.uint8)
+    else:
+        mean_c = np.array([200, 200, 200], dtype=np.uint8)
+    paint = np.tile(mean_c, (H, W, 1))
+
+    for i in paint_idx:
+        r, g, b = int(colors[i, 0]), int(colors[i, 1]), int(colors[i, 2])
+        pts = curves[i].astype(np.float32)
+        cx  = float(pts[:, 0].mean());  cy = float(pts[:, 1].mean())
+        dx  = float(pts[1, 0] - pts[0, 0]);  dy = float(pts[1, 1] - pts[0, 1])
+        length    = math.hypot(dx, dy) * 2
+        angle_deg = math.degrees(math.atan2(dy, dx))
+        bw        = max(4.0, float(widths[i]))
+        rect      = ((cx, cy), (max(4.0, length), bw), angle_deg)
+        box       = cv2.boxPoints(rect).astype(np.int32)
+        cv2.fillPoly(paint, [box], (r, g, b))
+    cv2.rectangle(paint, (0, 0), (W - 1, H - 1), (180, 180, 180), 1)
+
+    # ── Right: action timeline ────────────────────────────────────────────────
+    # Vertical strip: each row = one action; coloured by palette slot
+    TW, TH = 80, H   # timeline width, height
+    timeline = np.full((TH, TW, 3), 230, dtype=np.uint8)
+
+    # Colour lookup for palette slots
+    if pal_rgb is not None:
+        slot_colors = {i: (int(pal_rgb[i, 0]), int(pal_rgb[i, 1]), int(pal_rgb[i, 2]))
+                       for i in range(len(pal_rgb))}
+    else:
+        from palette_cfg import PALETTE_RGB
+        slot_colors = {i: PALETTE_RGB[i] for i in range(len(PALETTE_RGB))}
+
+    row_h = max(1, TH // max(n_all, 1))
+    current_slot_color = (200, 200, 200)
+
+    for i in range(n_all):
+        atype = int(types[i])
+        slot  = int(slots[i])
+        y0    = int(i * TH / n_all)
+        y1    = int((i + 1) * TH / n_all)
+
+        if atype == ACTION_DIP and slot >= 0:
+            current_slot_color = slot_colors.get(slot, (200, 200, 200))
+            # Dip marker: filled rectangle with border
+            cv2.rectangle(timeline, (2, y0), (TW - 2, max(y0 + 1, y1 - 1)),
+                          current_slot_color, -1)
+            cv2.rectangle(timeline, (2, y0), (TW - 2, max(y0 + 1, y1 - 1)),
+                          (80, 80, 80), 1)
+            cv2.putText(timeline, "DIP", (4, max(y0 + 8, y1 - 2)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.28, (0, 0, 0), 1, cv2.LINE_AA)
+        elif atype == ACTION_WASH:
+            # Wash marker: blue stripe
+            cv2.rectangle(timeline, (2, y0), (TW - 2, max(y0 + 1, y1 - 1)),
+                          (180, 220, 255), -1)
+            cv2.putText(timeline, "WASH", (4, max(y0 + 8, y1 - 2)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.28, (0, 80, 160), 1, cv2.LINE_AA)
+        else:  # PAINT
+            r, g, b = int(colors[i, 0]), int(colors[i, 1]), int(colors[i, 2])
+            cv2.rectangle(timeline, (2, y0), (TW - 2, max(y0 + 1, y1 - 1)),
+                          (r, g, b), -1)
+
+    cv2.rectangle(timeline, (0, 0), (TW - 1, TH - 1), (120, 120, 120), 1)
+
+    # ── Combine ───────────────────────────────────────────────────────────────
+    # Arrays were built by writing (r,g,b) values directly via cv2 — they are
+    # already in RGB order.  Matplotlib imshow interprets them as RGB, so no
+    # conversion is needed.  (cv2.imwrite expects BGR, but we never write here.)
+    div = np.full((H, 4, 3), 180, dtype=np.uint8)
+    combined = np.hstack([traj, div, paint, div, timeline])
+
+    fig, ax = plt.subplots(1, 1, figsize=(18, 7))
+    ax.imshow(combined, origin="upper")
+    ax.axis("off")
+
+    n_dip  = sum(1 for t in types if int(t) == ACTION_DIP)
+    n_wash = sum(1 for t in types if int(t) == ACTION_WASH)
+    ax.set_title(
+        f"{n_paint} paint  |  {n_dip} dip  |  {n_wash} wash  "
+        f"({n_all} total actions)    "
+        f"[left: trajectory map   centre: painted result   right: action timeline]",
+        fontsize=10
+    )
+
+    # Palette legend
+    if pal_rgb is not None and pal_names is not None:
+        from matplotlib.patches import Patch
+        handles = [Patch(facecolor=np.array(pal_rgb[i]) / 255,
+                         label=str(pal_names[i]))
+                   for i in range(len(pal_rgb))]
+        ax.legend(handles=handles, loc="lower right", fontsize=8,
+                  framealpha=0.85, ncol=3)
+
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    print(f"[vis] brushlegacy_v2 → {out_path}")
+    plt.close()
+
+
+def plot_cobrush_pro(npz_info: dict, out_path: str) -> None:
+    """Visualise BrushLegacy curves NPZ — trajectory style (traj_vis aesthetic).
+
+    Two sub-plots side by side:
+      Left  — trajectory map: thin coloured lines + transit dashes + stroke numbers.
+               White background, each stroke shown as a line from start→end.
+      Right — painted result: strokes rendered at full brush width on white canvas,
+               approximating what the finished painting looks like.
     """
     import cv2
 
@@ -155,34 +339,80 @@ def plot_cobrush_pro(npz_info: dict, out_path: str) -> None:
     widths  = npz_info.get("widths", [6.0] * len(curves))
     W = npz_info["canvas_width"]
     H = npz_info["canvas_height"]
+    n = len(curves)
 
-    canvas = np.full((H, W, 3), 255, dtype=np.uint8)   # white background
+    # ── Left: trajectory map ──────────────────────────────────────────────────
+    traj = np.full((H, W, 3), 245, dtype=np.uint8)   # light-grey background
 
-    # Draw transit lines first (beneath paint strokes)
+    # Canvas border
+    cv2.rectangle(traj, (0, 0), (W - 1, H - 1), (160, 160, 160), 1)
+
+    # Transit lines (dashed grey)
     prev_end = None
     for curve in curves:
         pts = np.asarray(curve, dtype=np.float32)
         p0 = (int(round(pts[0][0])), int(round(pts[0][1])))
         p1 = (int(round(pts[1][0])), int(round(pts[1][1])))
         if prev_end is not None:
-            cv2.line(canvas, prev_end, p0, (210, 210, 210), 1, cv2.LINE_AA)
+            # Draw dashed line manually (every 6px on / 4px off)
+            dx = p0[0] - prev_end[0];  dy = p0[1] - prev_end[1]
+            dist = max(1, int(np.hypot(dx, dy)))
+            for t in range(0, dist, 10):
+                t0 = t / dist;  t1 = min((t + 6) / dist, 1.0)
+                a = (int(prev_end[0] + dx * t0), int(prev_end[1] + dy * t0))
+                b = (int(prev_end[0] + dx * t1), int(prev_end[1] + dy * t1))
+                cv2.line(traj, a, b, (190, 190, 190), 1, cv2.LINE_AA)
         prev_end = p1
 
-    # Draw paint strokes as thick coloured lines
-    for curve, (r, g, b), bw in zip(curves, colors, widths):
+    # Paint strokes — thin line + start dot + index label
+    for i, (curve, (r, g, b)) in enumerate(zip(curves, colors)):
         pts = np.asarray(curve, dtype=np.float32)
         p0 = (int(round(pts[0][0])), int(round(pts[0][1])))
         p1 = (int(round(pts[1][0])), int(round(pts[1][1])))
-        thickness = max(2, int(round(bw)))
-        cv2.line(canvas, p0, p1, (r, g, b), thickness, cv2.LINE_AA)
+        col = (int(r), int(g), int(b))
+        # Darken very light colours so they're visible on light background
+        col_vis = tuple(max(0, c - 60) for c in col)
+        cv2.line(traj, p0, p1, col_vis, 2, cv2.LINE_AA)
+        cv2.circle(traj, p0, 3, col_vis, -1, cv2.LINE_AA)
+        # Label every 5th stroke to avoid clutter
+        if i % 5 == 0:
+            cv2.putText(traj, str(i), (p0[0] + 3, p0[1] - 3),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.28, col_vis, 1, cv2.LINE_AA)
 
-    # Canvas border
-    cv2.rectangle(canvas, (0, 0), (W - 1, H - 1), (180, 180, 180), 1)
+    # ── Right: painted result ─────────────────────────────────────────────────
+    # Base coat: mean of all stroke colours (matches stroke_gen canvas init)
+    if colors:
+        mean_c = np.array(colors).mean(axis=0).round().astype(np.uint8)
+    else:
+        mean_c = np.array([220, 220, 220], dtype=np.uint8)
+    paint = np.tile(mean_c, (H, W, 1))
 
-    fig, ax = plt.subplots(figsize=(8, 8))
-    ax.imshow(canvas, origin="upper")
-    ax.set_title(f"{len(curves)} strokes  ({W}×{H} px)")
-    ax.axis("off")
+    import math
+    for curve, (r, g, b), bw in zip(curves, colors, widths):
+        pts = np.asarray(curve, dtype=np.float32)
+        cx  = float(pts[:, 0].mean())
+        cy  = float(pts[:, 1].mean())
+        dx  = float(pts[1, 0] - pts[0, 0])
+        dy  = float(pts[1, 1] - pts[0, 1])
+        length = math.hypot(dx, dy) * 2        # full stroke length (traj_calc stores half-length endpoints)
+        angle_deg = math.degrees(math.atan2(dy, dx))
+        width = max(4.0, float(bw))
+        rect  = ((cx, cy), (max(4.0, length), width), angle_deg)
+        box   = cv2.boxPoints(rect).astype(np.int32)
+        cv2.fillPoly(paint, [box], (int(r), int(g), int(b)))
+
+    cv2.rectangle(paint, (0, 0), (W - 1, H - 1), (180, 180, 180), 1)
+
+    # ── Combine into side-by-side figure ─────────────────────────────────────
+    fig, axes = plt.subplots(1, 2, figsize=(16, 8))
+    axes[0].imshow(traj, origin="upper")
+    axes[0].set_title(f"Trajectory map  ({n} strokes)", fontsize=11)
+    axes[0].axis("off")
+
+    axes[1].imshow(paint, origin="upper")
+    axes[1].set_title(f"Painted result  ({W}×{H} px)", fontsize=11)
+    axes[1].axis("off")
+
     plt.tight_layout()
     plt.savefig(out_path, dpi=150, bbox_inches="tight")
     print(f"[vis] overview → {out_path}")
@@ -318,6 +548,18 @@ def main():
     npz_info = load_npz(str(npz_path))
     format_  = npz_info.get("format", "?")
     stem     = npz_path.stem
+
+    # ── BrushLegacy v2 action-sequence format ────────────────────────────────
+    if format_ == "brushlegacy_v2":
+        n_paint = sum(1 for t in npz_info["action_types"] if int(t) == 0)
+        print(f"[NPZ] {npz_path.name}  format={format_}  "
+              f"{npz_info['n']} actions  ({n_paint} paint)")
+        out = npz_path.parent / f"{stem}_overview.png"
+        import cv2  # noqa: F401 — needed by plot_brushlegacy_v2
+        plot_brushlegacy_v2(npz_info, str(out))
+        if args.show:
+            plt.show()
+        return
 
     # ── Cobrush Pro pixel-space format ───────────────────────────────────────
     if format_ == "cobrush_pro":

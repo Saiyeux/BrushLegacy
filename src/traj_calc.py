@@ -1,24 +1,37 @@
 """
-traj_calc.py  —  8D stroke CSV → Cobrush Pro NPZ (pixel-space curves)
+traj_calc.py  —  Stroke CSVs → action-sequence NPZ for Cobrush Pro
 
-Each 8D stroke (x, y, w, h, θ, r, g, b) in 256-pixel canvas space is
-converted to a 2-point pixel-space curve [start, end] at the target canvas
-resolution.  Brush width h is saved as width_i for visualization.
+Each 8D stroke (x, y, w, h, θ, r, g, b) in 512-pixel canvas space is converted
+to a 2-point pixel-space curve [start, end].  Palette slot assignment, brush
+washing, and dipping are automatically inserted as separate actions.
 
-NPZ format (Cobrush Pro compatible):
-    n_curves      int32
+Action types (see palette_cfg.py):
+    0  paint  — move brush along a stroke on the canvas
+    1  dip    — dip brush into a palette slot
+    2  wash   — wash brush in the water cup
+
+NPZ format (brushlegacy_v2):
+    format        string scalar  "brushlegacy_v2"
+    n_actions     int32          total number of actions in the sequence
     canvas_width  int32
     canvas_height int32
-    curve_i       float32 (2, 2)   [[x_start, y_start], [x_end, y_end]]
-    color_i       uint8   (3,)     [r, g, b]
-    width_i       float32          brush width in px (optional, for vis)
+    action_types  int32[N]       0/1/2 per action
+    curves        float32[N,2,2] pixel coords; [0,0,0,0] for non-paint
+    colors        uint8[N,3]     actual stroke RGB; palette RGB for dip; zeros for wash
+    widths        float32[N]     brush width in px; 0 for non-paint
+    slots         int32[N]       palette slot; -1 for wash
+
+    # Palette metadata stored for reference (not needed at execution time if
+    # the robot uses its own calibration):
+    palette_colors uint8[6,3]    RGB of the 6 palette slots
+    palette_names  object(6,)    colour name strings
 
 Usage:
     python src/traj_calc.py \\
         --layer3 data/strokes/Tiger_layer_03_sorted.csv \\
         --layer4 data/strokes/Tiger_layer_04_sorted.csv \\
         --layer5 data/strokes/Tiger_layer_05_sorted.csv \\
-        --output data/trajectories/Tiger_curves.npz \\
+        --output data/trajectories/Tiger_actions.npz \\
         --canvas 512 --max_strokes 300
 """
 
@@ -28,40 +41,45 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-STROKE_CANVAS = 256   # stroke coords live in [0, 256] (see stroke_convert.py)
+from palette_cfg import (
+    ACTION_PAINT, ACTION_DIP, ACTION_WASH,
+    PALETTE_RGB, PALETTE_NAMES,
+    nearest_slot,
+)
+
+STROKE_CANVAS = 512   # stroke coordinates live in [0, STROKE_CANVAS]
 
 
-def strokes_to_curves(csv_path: str, canvas_px: int,
-                      max_strokes: int = 0) -> tuple:
-    """Read 8D stroke CSV → (curves, colors, widths).
+# ── CSV → raw stroke list ─────────────────────────────────────────────────────
 
-    Returns:
-        curves: list of float32 (2,2) arrays  [[x0,y0],[x1,y1]]
-        colors: list of (r,g,b) tuples
-        widths: list of float  (brush width in canvas_px space)
+def _load_csv(csv_path: str, canvas_px: int, max_strokes: int = 0):
+    """Read one layer CSV and return (curves, colors, widths) lists.
+
+    curves : list of float32 (2,2) arrays  [[x0,y0],[x1,y1]]
+    colors : list of (r,g,b) tuples
+    widths : list of float (brush width in canvas_px)
     """
     df = pd.read_csv(csv_path)
     required = ["x", "y", "w", "h", "θ", "r", "g", "b"]
-    missing = [c for c in required if c not in df.columns]
+    missing  = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError(f"{csv_path}: missing columns {missing}")
 
     if max_strokes > 0 and len(df) > max_strokes:
-        # Evenly sample to preserve spatial distribution (strokes are grid-sorted)
         idx = np.round(np.linspace(0, len(df) - 1, max_strokes)).astype(int)
-        df = df.iloc[idx].reset_index(drop=True)
+        df  = df.iloc[idx].reset_index(drop=True)
 
-    scale = canvas_px / STROKE_CANVAS
+    scale  = canvas_px / STROKE_CANVAS
     curves, colors, widths = [], [], []
 
     for _, row in df.iterrows():
-        cx = float(row["x"]) * scale
-        cy = float(row["y"]) * scale
-        half_w = float(row["w"]) * scale / 2.0
-        brush_w = float(row["h"]) * scale           # minor axis → brush width
-        angle = float(row["θ"]) * 2.0               # θ stored halved
+        cx      = float(row["x"]) * scale
+        cy      = float(row["y"]) * scale
+        half_w  = float(row["w"]) * scale / 2.0
+        brush_w = float(row["h"]) * scale
+        angle   = float(row["θ"])
 
-        cos_a, sin_a = np.cos(angle), np.sin(angle)
+        cos_a = np.cos(angle);  sin_a = np.sin(angle)
         start = np.array([cx - half_w * cos_a, cy - half_w * sin_a], dtype=np.float32)
         end   = np.array([cx + half_w * cos_a, cy + half_w * sin_a], dtype=np.float32)
 
@@ -75,41 +93,88 @@ def strokes_to_curves(csv_path: str, canvas_px: int,
     return curves, colors, widths
 
 
+# ── Palette slot assignment ───────────────────────────────────────────────────
+
+def _assign_slots(colors: list) -> list[int]:
+    """Map each stroke colour to the nearest palette slot index."""
+    return [nearest_slot(r, g, b) for r, g, b in colors]
+
+
+# ── Action sequence builder ───────────────────────────────────────────────────
+
+def _build_action_sequence(curves, colors, widths, slots) -> tuple:
+    """Insert dip and wash actions around paint strokes.
+
+    Rules:
+      - Always dip before the very first stroke.
+      - When the palette slot changes:
+          1. Wash the brush (ACTION_WASH).
+          2. Dip in the new slot (ACTION_DIP).
+      - No wash needed if painting with the same colour as before.
+
+    Returns (act_types, act_curves, act_colors, act_widths, act_slots) as lists.
+    """
+    act_types  = []
+    act_curves = []
+    act_colors = []
+    act_widths = []
+    act_slots  = []
+
+    def _push(atype, curve=None, color=(0, 0, 0), width=0.0, slot=-1):
+        act_types.append(atype)
+        act_curves.append(curve if curve is not None
+                          else np.zeros((2, 2), dtype=np.float32))
+        act_colors.append(color)
+        act_widths.append(float(width))
+        act_slots.append(int(slot))
+
+    current_slot = None
+
+    for curve, color, width, slot in zip(curves, colors, widths, slots):
+        if slot != current_slot:
+            if current_slot is not None:
+                # Brush needs washing before switching colour
+                _push(ACTION_WASH)
+            # Dip in the new palette slot
+            _push(ACTION_DIP, color=PALETTE_RGB[slot], slot=slot)
+            current_slot = slot
+
+        _push(ACTION_PAINT, curve=curve, color=color, width=width, slot=slot)
+
+    return act_types, act_curves, act_colors, act_widths, act_slots
+
+
+# ── NPZ builder ───────────────────────────────────────────────────────────────
+
 def build_npz(layer_csvs: dict, canvas_px: int, output_path: str,
               max_strokes: int = 300) -> str | None:
-    """Merge all layers into one Cobrush Pro NPZ.
+    """Merge all layers into one brushlegacy_v2 action-sequence NPZ.
 
-    layer_csvs: {3: path, 4: path, 5: path} — processed 3→4→5.
-    max_strokes: total cap distributed proportionally across layers.
+    layer_csvs  : {3: path, 4: path, 5: path}
+    max_strokes : total stroke cap (distributed proportionally)
     """
-    # Count available strokes per layer first
+    # ── Load all layers ──────────────────────────────────────────────────────
+    LAYER_WEIGHT = {3: 0.50, 4: 0.35, 5: 0.15}
     counts = {}
     for layer, path in layer_csvs.items():
         if Path(path).exists():
-            df = pd.read_csv(path)
-            counts[layer] = len(df)
+            counts[layer] = len(pd.read_csv(path))
 
     if not counts:
         print("[traj_calc] no input files found")
         return None
 
-    # Fixed-weight per-layer allocation: large brush gets most budget
-    # Weight: layer3=50%, layer4=35%, layer5=15%  (big strokes dominate appearance)
-    LAYER_WEIGHT = {3: 0.50, 4: 0.35, 5: 0.15}
     total_avail = sum(counts.values())
-    per_layer: dict[int, int] = {}
     if max_strokes > 0 and total_avail > max_strokes:
-        total_weight = sum(LAYER_WEIGHT.get(l, 0.33) for l in counts)
-        for layer, n in counts.items():
-            w = LAYER_WEIGHT.get(layer, 0.33) / total_weight
-            per_layer[layer] = min(n, max(1, round(max_strokes * w)))
-        # Adjust rounding error to the heaviest layer
+        tw = sum(LAYER_WEIGHT.get(l, 0.33) for l in counts)
+        per_layer = {l: min(n, max(1, round(max_strokes * LAYER_WEIGHT.get(l, 0.33) / tw)))
+                     for l, n in counts.items()}
         diff = max_strokes - sum(per_layer.values())
         if diff != 0:
             heaviest = max(counts, key=lambda l: LAYER_WEIGHT.get(l, 0))
             per_layer[heaviest] = max(1, per_layer[heaviest] + diff)
     else:
-        per_layer = {layer: 0 for layer in counts}   # 0 = no limit
+        per_layer = {l: 0 for l in counts}
 
     all_curves, all_colors, all_widths = [], [], []
 
@@ -118,42 +183,82 @@ def build_npz(layer_csvs: dict, canvas_px: int, output_path: str,
         if not Path(path).exists():
             print(f"[traj_calc] layer {layer}: not found, skipped")
             continue
-        lim = per_layer.get(layer, 0)
-        curves, colors, widths = strokes_to_curves(path, canvas_px, lim)
-        print(f"[traj_calc] layer {layer}: {len(curves)} curves  ({path.name if hasattr(path,'name') else path})")
-        all_curves.extend(curves)
-        all_colors.extend(colors)
-        all_widths.extend(widths)
+        c, col, w = _load_csv(path, canvas_px, per_layer.get(layer, 0))
+        # Group strokes within each layer by palette slot to minimise washes.
+        # Stable sort preserves spatial order within each colour group.
+        slots_layer = _assign_slots(col)
+        order = sorted(range(len(slots_layer)), key=lambda i: slots_layer[i])
+        c   = [c[i]   for i in order]
+        col = [col[i] for i in order]
+        w   = [w[i]   for i in order]
+        # Count unique slots in this layer
+        unique = sorted(set(slots_layer))
+        from palette_cfg import PALETTE_NAMES
+        color_summary = ", ".join(f"{PALETTE_NAMES[s]}×{slots_layer.count(s)}"
+                                  for s in unique)
+        print(f"[traj_calc] layer {layer}: {len(c)} strokes  [{color_summary}]")
+        all_curves.extend(c)
+        all_colors.extend(col)
+        all_widths.extend(w)
 
     if not all_curves:
         print("[traj_calc] no strokes — nothing to save")
         return None
 
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    data = {
-        "n_curves":      np.int32(len(all_curves)),
-        "canvas_width":  np.int32(canvas_px),
-        "canvas_height": np.int32(canvas_px),
-    }
-    for i, (curve, (r, g, b), w) in enumerate(zip(all_curves, all_colors, all_widths)):
-        data[f"curve_{i}"]  = curve.astype(np.float32)
-        data[f"color_{i}"]  = np.array([r, g, b], dtype=np.uint8)
-        data[f"width_{i}"]  = np.float32(w)
+    # ── Assign palette slots ─────────────────────────────────────────────────
+    all_slots = _assign_slots(all_colors)
 
-    np.savez(output_path, **data)
-    print(f"[traj_calc] {len(all_curves)} total → {output_path}")
+    slot_counts = {}
+    for s in all_slots:
+        slot_counts[s] = slot_counts.get(s, 0) + 1
+    print("[traj_calc] palette usage:")
+    for s, n in sorted(slot_counts.items()):
+        from palette_cfg import PALETTE_NAMES
+        print(f"           slot {s} ({PALETTE_NAMES[s]:8s}): {n} strokes")
+
+    # ── Build action sequence ────────────────────────────────────────────────
+    types, curves, colors, widths, slots = _build_action_sequence(
+        all_curves, all_colors, all_widths, all_slots
+    )
+
+    n_paint = sum(1 for t in types if t == ACTION_PAINT)
+    n_dip   = sum(1 for t in types if t == ACTION_DIP)
+    n_wash  = sum(1 for t in types if t == ACTION_WASH)
+    print(f"[traj_calc] action sequence: {len(types)} total"
+          f"  ({n_paint} paint, {n_dip} dip, {n_wash} wash)")
+
+    # ── Serialise ────────────────────────────────────────────────────────────
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    N = len(types)
+    np.savez(
+        output_path,
+        format         = "brushlegacy_v2",
+        n_actions      = np.int32(N),
+        canvas_width   = np.int32(canvas_px),
+        canvas_height  = np.int32(canvas_px),
+        action_types   = np.array(types,  dtype=np.int32),
+        curves         = np.array(curves,  dtype=np.float32),   # N×2×2
+        colors         = np.array(colors,  dtype=np.uint8),     # N×3
+        widths         = np.array(widths,  dtype=np.float32),   # N
+        slots          = np.array(slots,   dtype=np.int32),     # N
+        palette_colors = np.array(PALETTE_RGB,   dtype=np.uint8),
+        palette_names  = np.array(PALETTE_NAMES, dtype=object),
+    )
+    print(f"[traj_calc] saved → {output_path}")
     return output_path
 
 
+# ── CLI ───────────────────────────────────────────────────────────────────────
+
 def main():
-    p = argparse.ArgumentParser(description="8D stroke CSV → Cobrush Pro curves NPZ")
+    p = argparse.ArgumentParser(description="Stroke CSVs → action-sequence NPZ")
     p.add_argument("--layer3", default=None)
     p.add_argument("--layer4", default=None)
     p.add_argument("--layer5", default=None)
-    p.add_argument("--output", required=True)
+    p.add_argument("--output",      required=True)
     p.add_argument("--canvas",      type=int, default=512)
     p.add_argument("--max_strokes", type=int, default=300,
-                   help="Total stroke cap distributed proportionally (0=no limit)")
+                   help="Total stroke cap across all layers (0 = no limit)")
     args = p.parse_args()
 
     layer_csvs = {}
