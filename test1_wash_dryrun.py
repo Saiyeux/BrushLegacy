@@ -6,7 +6,7 @@ test1_wash_dryrun.py — 空跑涮笔动作（不去任何标定位置）
 
 Usage:
     python test1_wash_dryrun.py
-    python test1_wash_dryrun.py --n 3 --amp 5
+    python test1_wash_dryrun.py --n 3 --amp 5 --speed 0.05
 """
 
 import argparse
@@ -16,13 +16,13 @@ import numpy as np
 sys.path.insert(0, "src")
 from wash_action import cone_trajectory, CONE_SPEED, DIP_SPEED, CONE_AMP_DEG, CONE_N_ROT
 from config_loader import robot_ip
-from pyfranka.franka_pybind import MotionGenerator
 
 
 def main():
     p = argparse.ArgumentParser(description="空跑涮笔: J5+J6 圆锥扫掠，从当前位置出发")
-    p.add_argument("--n",   type=int,   default=CONE_N_ROT,   help="旋转圈数 (默认 2)")
-    p.add_argument("--amp", type=float, default=CONE_AMP_DEG, help="圆锥半角 度 (默认 5)")
+    p.add_argument("--n",     type=int,   default=CONE_N_ROT,   help="旋转圈数 (默认 2)")
+    p.add_argument("--amp",   type=float, default=CONE_AMP_DEG, help="圆锥半角 度 (默认 5)")
+    p.add_argument("--speed", type=float, default=CONE_SPEED,   help=f"扫掠速度 (默认 {CONE_SPEED})")
     args = p.parse_args()
 
     ip = robot_ip()
@@ -43,7 +43,7 @@ def main():
 
     q_now = np.array(st.q)
     print(f"  当前关节角: {[f'{v:.3f}' for v in q_now]}")
-    print(f"  圆锥参数: {args.n} 圈 × {args.amp}°\n")
+    print(f"  圆锥参数: {args.n} 圈 × {args.amp}°  速度 {args.speed}\n")
 
     input("  ↑ 手动把笔放到水中合适位置，然后按 Enter 开始扫掠 … ")
 
@@ -54,8 +54,9 @@ def main():
     waypoints = cone_trajectory(q_now, n_rot=args.n, amp_deg=args.amp)
     print(f"  开始扫掠 ({len(waypoints)} 个路点) …")
 
+    from pyfranka.franka_pybind import MotionGenerator
     for wp in waypoints:
-        mg = MotionGenerator(CONE_SPEED, wp.tolist())
+        mg = MotionGenerator(args.speed, wp.tolist())
         api.robot_control(joint_positions_handle=mg.operator)
 
     print("  ✓ 完成。调整 --n / --amp 后再次运行。\n")

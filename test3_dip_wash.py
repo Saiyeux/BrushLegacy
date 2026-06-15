@@ -28,7 +28,6 @@ sys.path.insert(0, "src")
 from palette_cfg import PALETTE_RGB, PALETTE_NAMES, N_SLOTS, DEFAULT_CAL_PATH
 from wash_action  import cone_trajectory, CONE_SPEED, DIP_SPEED, HOVER_SPEED
 from config_loader import robot_ip
-from pyfranka.franka_pybind import MotionGenerator, CartesianVelocities, CartesianVelocitiesFinished
 
 
 def _swatch(r, g, b):
@@ -36,6 +35,7 @@ def _swatch(r, g, b):
 
 
 def _go_joint(api, q, speed, label=""):
+    from pyfranka.franka_pybind import MotionGenerator
     print(f"    → {label}")
     q_list = q if isinstance(q, list) else q.tolist()
     mg = MotionGenerator(speed, q_list)
@@ -44,6 +44,7 @@ def _go_joint(api, q, speed, label=""):
 
 def _go_cart(api, xyz, hover_T, hover_xyz, speed, label=""):
     """Move EE to target_xyz keeping orientation from hover_T (P-controller)."""
+    from pyfranka.franka_pybind import CartesianVelocities, CartesianVelocitiesFinished
     print(f"    → {label}  {[f'{v:.4f}' for v in xyz]}")
     T_goal = np.array(hover_T, dtype=np.float64).copy()
     T_goal[0, 3] = xyz[0]
@@ -118,6 +119,7 @@ def wash(api, cal, n_rot, amp_deg):
 
     wps = cone_trajectory(q_dip, n_rot=n_rot, amp_deg=amp_deg)
     print(f"    → cone sweep  {n_rot} rot × {amp_deg}°  ({len(wps)} pts)")
+    from pyfranka.franka_pybind import MotionGenerator
     for wp in wps:
         mg = MotionGenerator(CONE_SPEED, wp.tolist())
         api.robot_control(joint_positions_handle=mg.operator)

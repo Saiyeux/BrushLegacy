@@ -30,7 +30,6 @@ from palette_cfg   import PALETTE_NAMES, DEFAULT_CAL_PATH
 from wash_action   import cone_trajectory, do_wash, CONE_SPEED, DIP_SPEED, HOVER_SPEED
 from test3_dip_wash import dip_slot, wash   # reuse dip + wash logic
 from config_loader import robot_ip
-from pyfranka.franka_pybind import CartesianVelocities, CartesianVelocitiesFinished
 
 
 ACTION_PAINT = 0
@@ -165,6 +164,7 @@ def execute(api, npz_path: str, palette_cal: dict, canvas: dict,
                       f"  slot={current_slot}  RGB=({r},{g},{b})")
 
             if not dry_run:
+                from pyfranka.franka_pybind import CartesianVelocities, CartesianVelocitiesFinished
                 for T_tgt, spd in [
                     (T_hover, TRANSIT_SPEED),
                     (T_start, DIP_SPEED),

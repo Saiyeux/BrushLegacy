@@ -47,7 +47,6 @@ import time
 from pathlib import Path
 
 import numpy as np
-from pyfranka.franka_pybind import MotionGenerator
 
 # ── Motion parameters ─────────────────────────────────────────────────────────
 J5_IDX = 4          # 0-indexed joint indices for Franka Panda
@@ -121,6 +120,7 @@ def do_wash(api, cal: dict,
         steps    : waypoints per rotation (smoothness).
         verbose  : print progress.
     """
+    from pyfranka.franka_pybind import MotionGenerator
     q_hover = np.array(cal["water_hover_q"])
     q_dip   = np.array(cal["water_dip_q"])
 
