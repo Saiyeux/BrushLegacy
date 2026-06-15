@@ -1,22 +1,27 @@
 """
 palette_actions.py — Modular robot actions for palette dipping and washing.
 
-All public functions share the signature (api, cal, ...) where cal is the dict
-loaded from data/calibration/palette.npy.
+Motion safety
+-------------
+All horizontal movement happens at Hover-2 height (transit_z = water_hover_xyz[2]).
+Every move is decomposed into three Cartesian stages: rise → translate → descend.
+This prevents diagonal sweeps that would collide with palette walls or the water cup.
+
+Speeds are read from config.yaml [speeds] section, not hardcoded.
 
 Atomic actions
 --------------
-goto_paint_hover(api, cal, slot)   → Hover-1 above paint slot
-dip_paint(api, cal, slot)          → lower into paint, rise back to Hover-1
-goto_water_hover(api, cal)         → Hover-2 above water cup (also transit hub)
-dip_water(api, cal)                → lower into water from Hover-2
-cone_wash(api, cal, ...)           → conical J5+J6 sweep
-drip_wait(cal)                     → time.sleep at Hover-2 for drip
+goto_paint_hover(api, cal, slot)   → Hover-1 above paint slot via transit height
+dip_paint(api, cal, slot)          → lower into paint, rise back (pure Z)
+goto_water_hover(api, cal)         → Hover-2 above water cup via transit height
+dip_water(api, cal)                → joint move down into water (calibrated)
+cone_wash(api, cal, ...)           → conical J5+J6 sweep at dip position
+lift_from_water(api, cal)          → joint move up back to water_hover_q
+drip_wait(secs)                    → time.sleep at Hover-2
 
 Compound sequences
 ------------------
-wash_brush(api, cal, ...)          → goto_water_hover + dip_water + cone_wash
-                                     + goto_water_hover + drip_wait
+wash_brush(api, cal, ...)          → goto_water_hover + dip + sweep + lift + drip
 change_color(api, cal, new_slot)   → wash_brush + goto_paint_hover + dip_paint
 """
 from __future__ import annotations
@@ -24,12 +29,35 @@ from __future__ import annotations
 import time
 import numpy as np
 
-from wash_action import cone_sweep, CONE_SPEED, CONE_N_ROT, CONE_AMP_DEG, DIP_SPEED, HOVER_SPEED, DRIP_SEC
+from wash_action import cone_sweep, CONE_N_ROT, CONE_AMP_DEG
+
+
+# ── Config helpers ────────────────────────────────────────────────────────────
+
+def _speeds() -> dict:
+    """Load motion speeds from config.yaml with safe fallbacks."""
+    try:
+        from config_loader import load_config
+        s = load_config().get("speeds", {})
+    except Exception:
+        s = {}
+    return {
+        "hover":    float(s.get("hover",    0.2)),
+        "dip":      float(s.get("dip",      0.05)),
+        "cone":     float(s.get("cone",     0.5)),
+        "soak_sec": float(s.get("soak_sec", 0.3)),
+        "drip_sec": float(s.get("drip_sec", 3.0)),
+    }
+
+
+def _transit_z(cal) -> float:
+    """Transit height = Hover-2 Z (water cup hover); all horizontal moves at this Z."""
+    return float(np.array(cal["water_hover_xyz"])[2])
 
 
 # ── Low-level motion helpers ──────────────────────────────────────────────────
 
-def _joint_go(api, q, speed, label=""):
+def _joint_go(api, q, speed: float, label: str = "") -> None:
     from pyfranka.franka_pybind import MotionGenerator
     if label:
         print(f"    [{label}]")
@@ -37,11 +65,11 @@ def _joint_go(api, q, speed, label=""):
     api.robot_control(joint_positions_handle=mg.operator)
 
 
-def _cart_go(api, target_xyz, ref_T, speed, label=""):
-    """P-controller Cartesian move to target_xyz, keeping orientation of ref_T."""
+def _cart_go(api, target_xyz, speed: float, label: str = "") -> None:
+    """P-controller Cartesian move to target_xyz; stops within 1 mm."""
     from pyfranka.franka_pybind import CartesianVelocities, CartesianVelocitiesFinished
     if label:
-        print(f"    [{label}]  → {[f'{v:.4f}' for v in target_xyz]}")
+        print(f"    [{label}]  → [{target_xyz[0]:.4f}, {target_xyz[1]:.4f}, {target_xyz[2]:.4f}]")
     p_goal = np.array(target_xyz, dtype=np.float64)
 
     def cb(rs, period):
@@ -56,53 +84,101 @@ def _cart_go(api, target_xyz, ref_T, speed, label=""):
     api.robot_control(cartesian_velocities_handle=cb)
 
 
+def _safe_move(api, target_xyz, transit_z: float, speed: float, label: str = "") -> None:
+    """3-stage safe Cartesian move: rise → translate → descend.
+
+    Phase 1: rise  — move Z up to transit_z (keep XY)
+    Phase 2: translate — move XY to target XY (stay at transit_z)
+    Phase 3: descend — move Z down to target Z (keep XY)
+
+    If already above transit_z, uses current Z as transit height.
+    Never moves diagonally — eliminates collision risk with palette/water cup.
+    """
+    target = np.array(target_xyz, dtype=float)
+    if label:
+        print(f"    [{label}]")
+
+    st  = api.readOnce()
+    T_c = np.array(st.O_T_EE).reshape(4, 4, order='F')
+    cur = T_c[:3, 3].copy()
+    tz  = max(cur[2], transit_z)    # if already higher, stay high
+
+    # Phase 1: rise
+    if cur[2] < tz - 0.002:
+        _cart_go(api, np.array([cur[0], cur[1], tz]), speed, "↑ rise")
+
+    # Phase 2: translate XY
+    mid = np.array([target[0], target[1], tz])
+    if np.linalg.norm(mid[:2] - cur[:2]) > 0.002:
+        _cart_go(api, mid, speed, "→ translate")
+
+    # Phase 3: descend
+    if tz - target[2] > 0.002:
+        _cart_go(api, target, speed, "↓ descend")
+
+
 # ── Atomic actions ────────────────────────────────────────────────────────────
 
-def goto_paint_hover(api, cal, slot: int, speed: float = HOVER_SPEED) -> None:
-    """Move to Hover-1 position above paint slot."""
-    name = _slot_name(slot)
-    if slot == 0:   # Red: use recorded joint angles
-        _joint_go(api, cal["red_hover_q"], speed, f"goto hover-1 {name}")
-    else:
-        T = np.array(cal["slot_hover_T"][slot])
-        _cart_go(api, T[:3, 3], cal["red_hover_T"], speed, f"goto hover-1 {name}")
+def goto_paint_hover(api, cal, slot: int, speed: float | None = None) -> None:
+    """Move to Hover-1 above paint slot via transit height (safe 3-stage)."""
+    if speed is None:
+        speed = _speeds()["hover"]
+    T_hov = np.array(cal["slot_hover_T"][slot])
+    _safe_move(api, T_hov[:3, 3], _transit_z(cal), speed,
+               label=f"goto hover-1 {_slot_name(slot)}")
 
 
-def dip_paint(api, cal, slot: int, speed: float = DIP_SPEED) -> None:
-    """From Hover-1: descend dip_depth into paint, then return to Hover-1."""
-    name   = _slot_name(slot)
-    ref_T  = np.array(cal["red_hover_T"])
-    T_dip  = np.array(cal["slot_dip_T"][slot])
-    T_hov  = np.array(cal["slot_hover_T"][slot])
-
-    _cart_go(api, T_dip[:3, 3], ref_T, speed, f"dip paint {name}")
-    time.sleep(0.3)
-    _cart_go(api, T_hov[:3, 3], ref_T, speed, f"lift from {name}")
-
-
-def goto_water_hover(api, cal, speed: float = HOVER_SPEED) -> None:
-    """Move to Hover-2 (water cup hover / transit height)."""
-    _joint_go(api, cal["water_hover_q"], speed, "goto water hover-2")
+def dip_paint(api, cal, slot: int, speed: float | None = None) -> None:
+    """From Hover-1: descend into paint, soak, return to Hover-1. Pure Z motion."""
+    spd   = _speeds()
+    if speed is None:
+        speed = spd["dip"]
+    name  = _slot_name(slot)
+    T_dip = np.array(cal["slot_dip_T"][slot])
+    T_hov = np.array(cal["slot_hover_T"][slot])
+    _cart_go(api, T_dip[:3, 3], speed, f"↓ dip {name}")
+    time.sleep(spd["soak_sec"])
+    _cart_go(api, T_hov[:3, 3], speed, f"↑ lift {name}")
 
 
-def dip_water(api, cal, speed: float = DIP_SPEED) -> None:
-    """From Hover-2: descend into water dip position."""
-    _joint_go(api, cal["water_dip_q"], speed, "dip into water")
+def goto_water_hover(api, cal, speed: float | None = None) -> None:
+    """Move to Hover-2 (transit height above water cup) via safe 3-stage move."""
+    if speed is None:
+        speed = _speeds()["hover"]
+    water_xyz = np.array(cal["water_hover_xyz"])
+    _safe_move(api, water_xyz, _transit_z(cal), speed, label="goto water hover-2")
+
+
+def dip_water(api, cal, speed: float | None = None) -> None:
+    """From Hover-2: joint move down to water dip position (calibrated safe path)."""
+    if speed is None:
+        speed = _speeds()["dip"]
+    _joint_go(api, cal["water_dip_q"], speed, "↓ dip into water")
 
 
 def cone_wash(api, cal,
               n_rot: int     = CONE_N_ROT,
               amp_deg: float = CONE_AMP_DEG,
-              speed: float   = CONE_SPEED) -> None:
+              speed: float | None = None) -> None:
     """Conical J5+J6 sweep at current (water dip) position."""
-    q_dip = np.array(cal["water_dip_q"])
+    if speed is None:
+        speed = _speeds()["cone"]
     t_rot = 6.283 / speed
-    print(f"    [cone wash]  {n_rot} rot × {amp_deg}°  (~{t_rot*n_rot:.1f}s)")
-    cone_sweep(api, q_dip, n_rot=n_rot, amp_deg=amp_deg, speed=speed)
+    print(f"    [cone wash]  {n_rot} rot × {amp_deg}°  speed={speed} rad/s  (~{t_rot*n_rot:.1f}s)")
+    cone_sweep(api, np.array(cal["water_dip_q"]), n_rot=n_rot, amp_deg=amp_deg, speed=speed)
 
 
-def drip_wait(secs: float = DRIP_SEC) -> None:
+def lift_from_water(api, cal, speed: float | None = None) -> None:
+    """After cone sweep: joint move back to water_hover_q (lift brush out of cup)."""
+    if speed is None:
+        speed = _speeds()["dip"]
+    _joint_go(api, cal["water_hover_q"], speed, "↑ lift from water")
+
+
+def drip_wait(secs: float | None = None) -> None:
     """Wait at Hover-2 for water to drip off brush."""
+    if secs is None:
+        secs = _speeds()["drip_sec"]
     print(f"    [drip wait]  {secs:.1f}s")
     time.sleep(secs)
 
@@ -110,30 +186,30 @@ def drip_wait(secs: float = DRIP_SEC) -> None:
 # ── Compound sequences ────────────────────────────────────────────────────────
 
 def wash_brush(api, cal,
-               n_rot: int     = CONE_N_ROT,
-               amp_deg: float = CONE_AMP_DEG,
-               wash_speed: float = CONE_SPEED,
-               drip_secs: float  = DRIP_SEC) -> None:
-    """Full wash cycle: water hover → dip → sweep → water hover → drip."""
+               n_rot: int          = CONE_N_ROT,
+               amp_deg: float      = CONE_AMP_DEG,
+               wash_speed: float | None = None,
+               drip_secs: float | None  = None) -> None:
+    """Full wash cycle: water hover → dip → sweep → lift → drip."""
     goto_water_hover(api, cal)
     dip_water(api, cal)
     cone_wash(api, cal, n_rot=n_rot, amp_deg=amp_deg, speed=wash_speed)
-    goto_water_hover(api, cal)
+    lift_from_water(api, cal)
     drip_wait(drip_secs)
 
 
 def change_color(api, cal, new_slot: int,
-                 n_rot: int     = CONE_N_ROT,
-                 amp_deg: float = CONE_AMP_DEG,
-                 wash_speed: float = CONE_SPEED,
-                 drip_secs: float  = DRIP_SEC) -> None:
-    """Wash brush then dip into new_slot. Call this between color changes."""
+                 n_rot: int          = CONE_N_ROT,
+                 amp_deg: float      = CONE_AMP_DEG,
+                 wash_speed: float | None = None,
+                 drip_secs: float | None  = None) -> None:
+    """Wash brush then dip into new_slot."""
     print(f"\n  == 换色 → {_slot_name(new_slot)} ==")
     wash_brush(api, cal, n_rot=n_rot, amp_deg=amp_deg,
                wash_speed=wash_speed, drip_secs=drip_secs)
     goto_paint_hover(api, cal, new_slot)
     dip_paint(api, cal, new_slot)
-    goto_water_hover(api, cal)   # return to transit height ready for painting
+    goto_water_hover(api, cal)   # return to transit height
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────

@@ -48,18 +48,13 @@ from pathlib import Path
 
 import numpy as np
 
-# ── Motion parameters ─────────────────────────────────────────────────────────
+# ── Parameters ───────────────────────────────────────────────────────────────
 J5_IDX = 4          # 0-indexed joint indices for Franka Panda
 J6_IDX = 5
 
-HOVER_SPEED  = 0.4   # transit speed (matches Cobrush Pro v=0.4)
-DIP_SPEED    = 0.1   # slow descent into / ascent from paint or water (v_local)
-SOAK_SEC     = 0.3   # pause after dipping before starting to sweep
-DRIP_SEC     = 3.0   # wait at hover after sweep for water to drip off
-
-CONE_AMP_DEG  = 5.0   # default cone half-angle (degrees) — keep small
-CONE_N_ROT    = 2     # default number of full rotations
-CONE_SPEED    = 0.5   # angular rate of sweep (rad/s in phi space)
+CONE_AMP_DEG = 5.0   # default cone half-angle (degrees) — keep small
+CONE_N_ROT   = 2     # default number of full rotations
+# Speeds come from config.yaml [speeds] section — not hardcoded here
 
 
 # ── Continuous conical sweep ───────────────────────────────────────────────────
