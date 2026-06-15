@@ -90,18 +90,23 @@ def cone_sweep(api, q_center: np.ndarray,
 def do_wash(api, cal: dict,
             n_rot: int     = CONE_N_ROT,
             amp_deg: float = CONE_AMP_DEG,
-            speed: float   = CONE_SPEED,
+            speed: float   = 0.5,
             verbose: bool  = True) -> None:
-    """Execute the full brush-washing sequence.
-
-    Sequence:
-      1. MotionGenerator → water cup hover
-      2. MotionGenerator → dip into water
-      3. cone_sweep (continuous JointVelocities)
-      4. CartesianPose → lift 3 cm straight up, hold 3 s for drip
-      5. MotionGenerator → return to water cup hover
-    """
+    """Legacy combined wash sequence (use palette_actions.wash_brush instead)."""
     from pyfranka.franka_pybind import MotionGenerator
+
+    try:
+        import sys
+        sys.path.insert(0, "src") if "src" not in "".join(sys.path) else None
+        from config_loader import load_config
+        s = load_config().get("speeds", {})
+        hover_spd = float(s.get("hover", 0.2))
+        dip_spd   = float(s.get("dip",   0.05))
+        soak_sec  = float(s.get("soak_sec", 0.3))
+        drip_sec  = float(s.get("drip_sec", 3.0))
+    except Exception:
+        hover_spd, dip_spd, soak_sec, drip_sec = 0.2, 0.05, 0.3, 3.0
+
     q_hover = np.array(cal["water_hover_q"])
     q_dip   = np.array(cal["water_dip_q"])
 
@@ -111,10 +116,10 @@ def do_wash(api, cal: dict,
         mg = MotionGenerator(spd, q.tolist())
         api.robot_control(joint_positions_handle=mg.operator)
 
-    go(q_hover, HOVER_SPEED, "→ transit to water cup hover")
-    go(q_dip,   DIP_SPEED,   "↓ lower brush into water")
-    if SOAK_SEC > 0:
-        time.sleep(SOAK_SEC)
+    go(q_hover, hover_spd, "→ transit to water cup hover")
+    go(q_dip,   dip_spd,   "↓ lower brush into water")
+    if soak_sec > 0:
+        time.sleep(soak_sec)
 
     if verbose:
         t_rot = 2 * math.pi / speed
@@ -122,10 +127,10 @@ def do_wash(api, cal: dict,
               f"speed={speed} rad/s  (~{t_rot*n_rot:.1f}s)")
     cone_sweep(api, q_dip, n_rot=n_rot, amp_deg=amp_deg, speed=speed)
 
-    go(q_hover, DIP_SPEED, "↑ lift to water cup hover")
+    go(q_hover, dip_spd, "↑ lift to water cup hover")
     if verbose:
-        print(f"  [wash] ⏳ drip wait {DRIP_SEC} s …")
-    time.sleep(DRIP_SEC)
+        print(f"  [wash] ⏳ drip wait {drip_sec} s …")
+    time.sleep(drip_sec)
 
     if verbose:
         print("  [wash] done ✓")
