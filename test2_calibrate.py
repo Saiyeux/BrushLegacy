@@ -38,10 +38,10 @@ def _fmt(xyz):
     return f"[{xyz[0]:.4f}, {xyz[1]:.4f}, {xyz[2]:.4f}]"
 
 
-def _record(api, prompt: str):
+def _record(robot, prompt: str):
     """Wait for user, then read current EE pose and joint angles."""
     input(f"\n  → {prompt}\n    就位后按 Enter 记录 … ")
-    st  = api.readOnce()
+    st  = robot.read_state()
     T   = np.array(st.O_T_EE).reshape(4, 4, order='F')
     q   = list(st.q)
     xyz = T[:3, 3].copy()
@@ -57,12 +57,6 @@ def main():
 
     ip = robot_ip()
 
-    try:
-        from pyfranka.franka_pybind import FrankaApi
-    except ImportError:
-        print("[ERROR] pyfranka 未找到")
-        sys.exit(1)
-
     out_path = Path(DEFAULT_CAL_PATH)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -72,26 +66,24 @@ def main():
     print(f"{'='*60}")
     print("  操作方式: 按住引导按钮手动拖动机械臂，就位后松开，按 Enter\n")
 
-    print(f"\n  连接机械臂 {ip} …")
-    api = FrankaApi()
-    api.init_config(ip, log_size=1000)
-    api.set_default_behavior()
-    st = api.readOnce()
-    if st.robot_mode.name == "kReflex":
-        api.automatic_error_recovery()
+    from franka import Franka
+    robot = Franka(ip)
+    if not robot.wait_ready():
+        print("[ABORT] robot not ready")
+        sys.exit(1)
     print("  就绪。\n")
 
     # ── Step 1: Red (0,0) Hover-1 ─────────────────────────────────────────────
     r0, g0, b0 = SLOT_RGB[REF_SLOT]
     print(f"  ─── 步骤 1/4  Red {_swatch(r0,g0,b0)} (0,0) Hover-1 ───")
     print("  Hover-1 = 颜料格正上方（蘸墨起始高度）")
-    red_xyz, red_q, red_T = _record(api, "拖动到 Red 颜料格正上方")
+    red_xyz, red_q, red_T = _record(robot, "拖动到 Red 颜料格正上方")
 
     # ── Step 2: Yellow (0,4) Hover-1 ─────────────────────────────────────────
     r1, g1, b1 = SLOT_RGB[REF_SLOT2]
     print(f"\n  ─── 步骤 2/4  Yellow {_swatch(r1,g1,b1)} (0,4) Hover-1 ───")
     print("  同一行，向右数第4格（用于确定列方向）")
-    yellow_xyz, _, _ = _record(api, "拖动到 Yellow 颜料格正上方")
+    yellow_xyz, _, _ = _record(robot, "拖动到 Yellow 颜料格正上方")
 
     # Compute grid axes
     col_vec  = yellow_xyz - red_xyz                     # Red → Yellow: 4 cols
@@ -110,12 +102,12 @@ def main():
     # ── Step 3: Water Hover-2 ─────────────────────────────────────────────────
     print(f"\n  ─── 步骤 3/4  水筒 Hover-2（过渡高度）───")
     print("  Hover-2 = 水筒正上方，也是所有过渡动作的通道高度")
-    water_hover_xyz, water_hover_q, _ = _record(api, "拖动到水筒正上方")
+    water_hover_xyz, water_hover_q, _ = _record(robot, "拖动到水筒正上方")
 
     # ── Step 4: Water Dip ─────────────────────────────────────────────────────
     print(f"\n  ─── 步骤 4/4  水筒 Dip（圆锥扫掠定点）───")
     print("  笔尖入水中心，此处将执行 J5+J6 圆锥扫掠")
-    water_dip_xyz, water_dip_q, _ = _record(api, "拖动到笔尖入水位置")
+    water_dip_xyz, water_dip_q, _ = _record(robot, "拖动到笔尖入水位置")
 
     # ── Compute all slot positions ─────────────────────────────────────────────
     ref_row, ref_col = SLOT_GRID[REF_SLOT]

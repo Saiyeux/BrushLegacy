@@ -41,7 +41,6 @@ robot:
   canvas_image_size: 512    # pixel size used for coordinate normalisation
   calibration_matrix: "data/calibration/matrix.npy"
   calibration_xyz: "data/calibration/xyz_rotated2.npy"
-  home_joints: [0.0244, 0.1669, -0.4169, -2.046, 0.0831, 2.1966, 0.3484]
 
 # Trajectory
 trajectory:

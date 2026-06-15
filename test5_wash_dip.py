@@ -68,21 +68,13 @@ def main():
         sys.exit(1)
     cal = np.load(str(cal_path), allow_pickle=True).item()
 
-    try:
-        from pyfranka.franka_pybind import FrankaApi
-    except ImportError:
-        print("[ERROR] pyfranka 未找到")
-        sys.exit(1)
-
     ip = robot_ip()
-    print(f"\n  连接机械臂 {ip} …")
-    api = FrankaApi()
-    api.init_config(ip, log_size=1000)
-    api.set_default_behavior()
-    st = api.readOnce()
-    if st.robot_mode.name == "kReflex":
-        api.automatic_error_recovery()
-    print(f"  就绪。\n")
+    from franka import Franka
+    robot = Franka(ip)
+    if not robot.wait_ready():
+        print("[ABORT] robot not ready")
+        sys.exit(1)
+    print()
 
     print(f"  目标颜色: {_swatch(r,g,b)} {SLOT_NAMES[slot]} (slot {slot})")
     print(f"  移动速度: hover={spd['hover']}  dip={spd['dip']}")
@@ -90,27 +82,27 @@ def main():
 
     # ── 1. go home ────────────────────────────────────────────────────────────
     print("  [1/5] go home")
-    go_home(api)
+    go_home(robot)
 
     # ── 2. wash ───────────────────────────────────────────────────────────────
     print("\n  [2/5] 移动到水筒上方")
-    goto_water_hover(api, cal)
+    goto_water_hover(robot, cal)
 
     print("\n  [3/5] 涮笔")
-    dip_water(api, cal)
-    cone_wash(api, cal, n_rot=args.n, amp_deg=args.amp, speed=args.cone_speed)
-    lift_from_water(api, cal)
+    dip_water(robot, cal)
+    cone_wash(robot, cal, n_rot=args.n, amp_deg=args.amp, speed=args.cone_speed)
+    lift_from_water(robot, cal)
     drip_wait()
 
     # ── 3. dip paint ──────────────────────────────────────────────────────────
     print(f"\n  [4/5] 蘸墨 → {SLOT_NAMES[slot]}")
-    goto_paint_hover(api, cal, slot)
-    dip_paint(api, cal, slot)
+    goto_paint_hover(robot, cal, slot)
+    dip_paint(robot, cal, slot)
 
     # ── 4. go home ────────────────────────────────────────────────────────────
     print("\n  [5/5] go home")
-    goto_water_hover(api, cal)   # 先升到transit高度再回home，避免低位直接joint移动
-    go_home(api)
+    goto_water_hover(robot, cal)   # 先升到transit高度再回home，避免低位直接joint移动
+    go_home(robot)
 
     print("\n  ✓ 完成\n")
 

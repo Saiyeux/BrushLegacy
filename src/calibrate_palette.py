@@ -93,23 +93,17 @@ def _fmt_q(q) -> str:
 # ── Robot interface ───────────────────────────────────────────────────────────
 
 def _connect_robot(ip: str):
-    try:
-        from pyfranka.franka_pybind import FrankaApi
-    except ImportError:
-        print("[ERROR] pyfranka not available. Use --manual.")
+    from franka import Franka
+    robot = Franka(ip)
+    if not robot.wait_ready():
+        print("[ABORT] robot not ready")
         sys.exit(1)
-    api = FrankaApi()
-    api.init_config(ip, log_size=1000)
-    api.set_default_behavior()
-    st = api.readOnce()
-    if st.robot_mode.name == "kReflex":
-        api.automatic_error_recovery()
     print(f"  Robot connected at {ip}\n")
-    return api
+    return robot
 
 
-def _read_ee(api) -> tuple[np.ndarray, list[float]]:
-    st = api.readOnce()
+def _read_ee(robot) -> tuple[np.ndarray, list[float]]:
+    st = robot.read_state()
     T  = np.array(st.O_T_EE).reshape(4, 4, order='F')
     return T[:3, 3].copy(), list(st.q)
 

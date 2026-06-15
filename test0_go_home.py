@@ -10,10 +10,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import math
 import sys
 
 sys.path.insert(0, "src")
+from franka import Franka, HOME_JOINTS
 from config_loader import load_config, robot_ip
 from palette_actions import go_home
 
@@ -37,30 +37,21 @@ def main():
                    help="MotionGenerator speed (default from config)")
     args = p.parse_args()
 
-    try:
-        from pyfranka.franka_pybind import FrankaApi
-    except ImportError:
-        print("[ERROR] pyfranka 未找到")
+    ip = robot_ip()
+    robot = Franka(ip)
+    if not robot.wait_ready():
+        print("[ABORT] robot not ready")
         sys.exit(1)
 
-    ip = robot_ip()
-    print(f"\n  连接机械臂 {ip} …")
-    api = FrankaApi()
-    api.init_config(ip, log_size=1000)
-    api.set_default_behavior()
-    st = api.readOnce()
-    if st.robot_mode.name == "kReflex":
-        api.automatic_error_recovery()
-
-    print(f"  就绪。")
+    st = robot.read_state()
     print(f"  当前 q  : {_fmt_q(st.q)}")
     print(f"  当前 EE : {_fmt_T(st.O_T_EE)}")
-    print(f"  目标 q  : {_fmt_q(cfg['robot']['home_joints'])}")
+    print(f"  目标 q  : {_fmt_q(HOME_JOINTS)}")
     print(f"  speed   : {args.speed}\n")
 
-    go_home(api, speed=args.speed)
+    go_home(robot, speed=args.speed)
 
-    st2 = api.readOnce()
+    st2 = robot.read_state()
     print(f"\n  到达 q  : {_fmt_q(st2.q)}")
     print(f"  到达 EE : {_fmt_T(st2.O_T_EE)}")
     print("  ✓ done\n")

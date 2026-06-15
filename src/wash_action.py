@@ -68,7 +68,7 @@ def cone_sweep(api, q_center: np.ndarray,
     Ramps J5+J6 velocity over the first and last quarter-rotation so there
     are no abrupt velocity steps — avoids joint_motion_generator discontinuity reflex.
     """
-    from pyfranka.franka_pybind import JointVelocities, JointVelocitiesFinished
+    from franka import JointVelocities, JointVelocitiesFinished
     amp       = math.radians(amp_deg)
     total_phi = 2.0 * math.pi * n_rot
     RAMP      = min(math.pi / 2, total_phi / 4)   # ramp over quarter rotation
@@ -103,7 +103,7 @@ def do_wash(api, cal: dict,
             speed: float   = 0.5,
             verbose: bool  = True) -> None:
     """Legacy combined wash sequence (use palette_actions.wash_brush instead)."""
-    from pyfranka.franka_pybind import MotionGenerator
+    from franka import MotionGenerator
 
     try:
         import sys
@@ -182,22 +182,15 @@ def _run_test(ip: str, cal_path: str, n_rot: int, amp_deg: float,
     if preview_only:
         return
 
-    try:
-        from pyfranka.franka_pybind import FrankaApi
-    except ImportError:
-        print("[ERROR] pyfranka not available — use --preview to check trajectory only.")
-        return
-
+    from franka import Franka
     print(f"\n  Connecting to {ip} …")
-    api = FrankaApi()
-    api.init_config(ip, log_size=1000)
-    api.set_default_behavior()
-    st = api.readOnce()
-    if st.robot_mode.name == "kReflex":
-        api.automatic_error_recovery()
+    robot = Franka(ip)
+    if not robot.wait_ready():
+        print("[ABORT] robot not ready")
+        return
     print("  Robot ready.\n")
 
-    do_wash(api, cal, n_rot=n_rot, amp_deg=amp_deg)
+    do_wash(robot, cal, n_rot=n_rot, amp_deg=amp_deg)
 
 
 def main():

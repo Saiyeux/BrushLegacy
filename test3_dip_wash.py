@@ -54,21 +54,13 @@ def main():
 
     cal = np.load(str(cal_path), allow_pickle=True).item()
 
-    try:
-        from pyfranka.franka_pybind import FrankaApi
-    except ImportError:
-        print("[ERROR] pyfranka 未找到")
-        sys.exit(1)
-
     ip = robot_ip()
-    print(f"\n  连接机械臂 {ip} …")
-    api = FrankaApi()
-    api.init_config(ip, log_size=1000)
-    api.set_default_behavior()
-    st = api.readOnce()
-    if st.robot_mode.name == "kReflex":
-        api.automatic_error_recovery()
-    print("  就绪。\n")
+    from franka import Franka
+    robot = Franka(ip)
+    if not robot.wait_ready():
+        print("[ABORT] robot not ready")
+        sys.exit(1)
+    print()
 
     transit_z = float(np.array(cal["water_hover_xyz"])[2])
     print(f"  ══ 蘸色+涮笔循环  {N_SLOTS} 种颜色 ══")
@@ -79,11 +71,11 @@ def main():
         r, g, b = SLOT_RGB[slot]
         print(f"\n  ── {_swatch(r,g,b)} {SLOT_NAMES[slot]} (slot {slot}) ──")
 
-        goto_paint_hover(api, cal, slot)
-        dip_paint(api, cal, slot)
+        goto_paint_hover(robot, cal, slot)
+        dip_paint(robot, cal, slot)
         goto_water_hover(api, cal)
         dip_water(api, cal)
-        cone_wash(api, cal, n_rot=args.n, amp_deg=args.amp, speed=args.speed)
+        cone_wash(robot, cal, n_rot=args.n, amp_deg=args.amp, speed=args.speed)
         lift_from_water(api, cal)
         drip_wait(args.drip)
 
