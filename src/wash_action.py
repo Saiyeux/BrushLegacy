@@ -57,42 +57,38 @@ DIP_SPEED    = 0.15  # slow descent into / ascent from water
 CONE_SPEED   = 0.08  # very slow during the conical sweep
 SOAK_SEC     = 0.3   # pause after dipping before starting to sweep
 
-CONE_AMP_DEG = 5.0   # default cone half-angle (degrees) — keep small
-CONE_N_ROT   = 2     # default number of full rotations
-CONE_STEPS   = 24    # waypoints per full rotation (higher = smoother)
+CONE_AMP_DEG  = 5.0   # default cone half-angle (degrees) — keep small
+CONE_N_ROT    = 2     # default number of full rotations
+CONE_SPEED    = 0.5   # angular rate of sweep (rad/s in phi space)
 
 
-# ── Trajectory generator ──────────────────────────────────────────────────────
+# ── Continuous conical sweep ───────────────────────────────────────────────────
 
-def cone_trajectory(q_center: np.ndarray,
-                    n_rot: int   = CONE_N_ROT,
-                    amp_deg: float = CONE_AMP_DEG,
-                    steps: int   = CONE_STEPS):
-    """Compute joint waypoints for the conical sweep.
+def cone_sweep(api, q_center: np.ndarray,
+               n_rot: int     = CONE_N_ROT,
+               amp_deg: float = CONE_AMP_DEG,
+               speed: float   = CONE_SPEED) -> None:
+    """Execute conical sweep as a single continuous robot_control call.
 
-    Args:
-        q_center : 7-element joint config — brush tip at water centre.
-        n_rot    : number of full 360° rotations.
-        amp_deg  : cone half-angle in degrees (recommended 3–7°).
-        steps    : number of waypoints per full rotation.
-
-    Returns:
-        List of 7-element numpy arrays (joint configs).
-        Last waypoint returns to q_center.
+    Uses a JointPositions callback — phi advances at `speed` rad/s, so the
+    robot never stops between waypoints. One full rotation takes 2π/speed s.
     """
-    amp = math.radians(amp_deg)
-    waypoints = []
+    from pyfranka.franka_pybind import JointPositions, JointPositionsFinished
+    amp        = math.radians(amp_deg)
+    total_phi  = 2.0 * math.pi * n_rot
+    phi        = [0.0]
 
-    total_steps = n_rot * steps
-    for i in range(total_steps + 1):
-        phi = 2.0 * math.pi * i / steps   # azimuthal angle
-        q   = q_center.copy()
-        q[J5_IDX] = q_center[J5_IDX] + amp * math.cos(phi)
-        q[J6_IDX] = q_center[J6_IDX] + amp * math.sin(phi)
-        waypoints.append(q)
+    def callback(robot_state, period):
+        phi[0] += speed * period.toSec()
+        q = q_center.copy()
+        if phi[0] >= total_phi:
+            # return to centre and finish
+            return JointPositionsFinished(JointPositions(q.tolist()))
+        q[J5_IDX] = q_center[J5_IDX] + amp * math.cos(phi[0])
+        q[J6_IDX] = q_center[J6_IDX] + amp * math.sin(phi[0])
+        return JointPositions(q.tolist())
 
-    waypoints.append(q_center.copy())   # return to centre
-    return waypoints
+    api.robot_control(joint_positions_handle=callback)
 
 
 # ── Execution ─────────────────────────────────────────────────────────────────
@@ -100,56 +96,38 @@ def cone_trajectory(q_center: np.ndarray,
 def do_wash(api, cal: dict,
             n_rot: int     = CONE_N_ROT,
             amp_deg: float = CONE_AMP_DEG,
-            steps: int     = CONE_STEPS,
+            speed: float   = CONE_SPEED,
             verbose: bool  = True) -> None:
     """Execute the full brush-washing sequence.
 
     Sequence:
-      1. joint_go(water_hover_q, fast)    — transit to above water cup
-      2. joint_go(water_dip_q,   slow)    — lower brush into water
-      3. [soak pause]
-      4. conical sweep (J5+J6 only)       — n_rot × 360° at amp_deg
-      5. return to water_dip_q            — re-centre
-      6. joint_go(water_hover_q, slow)    — lift out
-
-    Args:
-        api      : Franka robot API instance (must have .joint_go(q, speed)).
-        cal      : dict from data/calibration/palette.npy.
-        n_rot    : number of conical rotations.
-        amp_deg  : cone half-angle in degrees (default 5°).
-        steps    : waypoints per rotation (smoothness).
-        verbose  : print progress.
+      1. MotionGenerator → water cup hover
+      2. MotionGenerator → dip into water
+      3. cone_sweep (single continuous robot_control call)
+      4. MotionGenerator → lift out
     """
     from pyfranka.franka_pybind import MotionGenerator
     q_hover = np.array(cal["water_hover_q"])
     q_dip   = np.array(cal["water_dip_q"])
 
-    def go(q, speed, label=""):
+    def go(q, spd, label=""):
         if verbose:
             print(f"  [wash] {label}")
-        mg = MotionGenerator(speed, q.tolist())
+        mg = MotionGenerator(spd, q.tolist())
         api.robot_control(joint_positions_handle=mg.operator)
 
-    # 1. Approach
     go(q_hover, HOVER_SPEED, "→ transit to water cup hover")
-
-    # 2. Dip
-    go(q_dip, DIP_SPEED, "↓ lower brush into water")
+    go(q_dip,   DIP_SPEED,   "↓ lower brush into water")
     if SOAK_SEC > 0:
         time.sleep(SOAK_SEC)
 
-    # 3. Conical sweep
     if verbose:
+        t_rot = 2 * math.pi / speed
         print(f"  [wash] ⊙ cone sweep  {n_rot} rot × {amp_deg}°  "
-              f"({steps} steps/rot)")
-    waypoints = cone_trajectory(q_dip, n_rot=n_rot, amp_deg=amp_deg, steps=steps)
-    for wp in waypoints:
-        mg = MotionGenerator(CONE_SPEED, wp.tolist())
-        api.robot_control(joint_positions_handle=mg.operator)
+              f"speed={speed} rad/s  (~{t_rot*n_rot:.1f}s)")
+    cone_sweep(api, q_dip, n_rot=n_rot, amp_deg=amp_deg, speed=speed)
 
-    # 4. Lift
-    go(q_dip,   DIP_SPEED,   "↑ re-centre")
-    go(q_hover, DIP_SPEED,   "↑ lift out of water")
+    go(q_hover, DIP_SPEED, "↑ lift out of water")
 
     if verbose:
         print("  [wash] done ✓")

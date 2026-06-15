@@ -26,7 +26,7 @@ import numpy as np
 
 sys.path.insert(0, "src")
 from palette_cfg import PALETTE_RGB, PALETTE_NAMES, N_SLOTS, DEFAULT_CAL_PATH
-from wash_action  import cone_trajectory, CONE_SPEED, DIP_SPEED, HOVER_SPEED
+from wash_action  import cone_sweep, CONE_SPEED, DIP_SPEED, HOVER_SPEED
 from config_loader import robot_ip
 
 
@@ -117,12 +117,8 @@ def wash(api, cal, n_rot, amp_deg):
     _go_joint(api, q_dip,   DIP_SPEED,   "dip into water")
     time.sleep(0.3)
 
-    wps = cone_trajectory(q_dip, n_rot=n_rot, amp_deg=amp_deg)
-    print(f"    → cone sweep  {n_rot} rot × {amp_deg}°  ({len(wps)} pts)")
-    from pyfranka.franka_pybind import MotionGenerator
-    for wp in wps:
-        mg = MotionGenerator(CONE_SPEED, wp.tolist())
-        api.robot_control(joint_positions_handle=mg.operator)
+    print(f"    → cone sweep  {n_rot} rot × {amp_deg}°")
+    cone_sweep(api, q_dip, n_rot=n_rot, amp_deg=amp_deg)
 
     _go_joint(api, q_dip,   DIP_SPEED,   "re-centre")
     _go_joint(api, q_hover, DIP_SPEED,   "lift out")
