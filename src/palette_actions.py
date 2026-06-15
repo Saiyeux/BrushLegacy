@@ -26,6 +26,7 @@ change_color(api, cal, new_slot)   → wash_brush + goto_paint_hover + dip_paint
 """
 from __future__ import annotations
 
+import math
 import time
 import numpy as np
 
@@ -66,20 +67,34 @@ def _joint_go(api, q, speed: float, label: str = "") -> None:
 
 
 def _cart_go(api, target_xyz, speed: float, label: str = "") -> None:
-    """P-controller Cartesian move to target_xyz; stops within 1 mm."""
+    """Cartesian move with exponential velocity smoothing.
+
+    Uses a P-controller target blended through a low-pass filter so velocity
+    ramps up and down smoothly — avoids Franka acceleration discontinuity reflex.
+    """
     from pyfranka.franka_pybind import CartesianVelocities, CartesianVelocitiesFinished
     if label:
         print(f"    [{label}]  → [{target_xyz[0]:.4f}, {target_xyz[1]:.4f}, {target_xyz[2]:.4f}]")
-    p_goal = np.array(target_xyz, dtype=np.float64)
+    p_goal  = np.array(target_xyz, dtype=np.float64)
+    v_cur   = np.zeros(3)   # smoothed velocity state (starts at 0)
+    TAU     = 0.12          # smoothing time constant (s); ~120ms ramp
 
     def cb(rs, period):
+        dt  = max(period.toSec(), 0.0005)
         T_c = np.array(rs.O_T_EE).reshape(4, 4, order='F')
         err = p_goal - T_c[:3, 3]
         d   = np.linalg.norm(err)
-        if d < 0.001:
+
+        # Natural stop: position reached AND velocity nearly zero
+        if d < 0.001 and np.linalg.norm(v_cur) < 0.005:
             return CartesianVelocitiesFinished(CartesianVelocities([0.0] * 6))
-        v = (err / d) * min(speed, d * 3.0)
-        return CartesianVelocities(v.tolist() + [0.0, 0.0, 0.0])
+
+        v_des = (err / d) * min(speed, d * 4.0) if d > 0.001 else np.zeros(3)
+
+        alpha = 1.0 - math.exp(-dt / TAU)
+        v_cur[:] += alpha * (v_des - v_cur)
+
+        return CartesianVelocities(v_cur.tolist() + [0.0, 0.0, 0.0])
 
     api.robot_control(cartesian_velocities_handle=cb)
 

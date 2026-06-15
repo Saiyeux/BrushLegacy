@@ -63,23 +63,33 @@ def cone_sweep(api, q_center: np.ndarray,
                n_rot: int     = CONE_N_ROT,
                amp_deg: float = CONE_AMP_DEG,
                speed: float   = 0.5) -> None:
-    """Execute conical sweep as a single continuous robot_control call.
+    """Execute conical sweep with smooth velocity ramp-up and ramp-down.
 
-    Uses JointVelocities callback — J5 and J6 rotate at `speed` rad/s in
-    a coordinated circle. One full rotation takes 2π/speed seconds.
+    Ramps J5+J6 velocity over the first and last quarter-rotation so there
+    are no abrupt velocity steps — avoids joint_motion_generator discontinuity reflex.
     """
     from pyfranka.franka_pybind import JointVelocities, JointVelocitiesFinished
     amp       = math.radians(amp_deg)
     total_phi = 2.0 * math.pi * n_rot
+    RAMP      = min(math.pi / 2, total_phi / 4)   # ramp over quarter rotation
     phi       = [0.0]
 
     def callback(robot_state, period):
-        phi[0] += speed * period.toSec()
-        if phi[0] >= total_phi:
+        p         = phi[0]
+        remaining = total_phi - p
+
+        if remaining <= 0.0:
             return JointVelocitiesFinished(JointVelocities([0.0] * 7))
+
+        # Scale 0→1 during ramp-up, 1→0 during ramp-down
+        scale = min(1.0, p / RAMP, remaining / RAMP)
+        s     = speed * max(scale, 0.05)   # floor at 5% so phi always advances
+
+        phi[0] += s * period.toSec()
+
         dq = [0.0] * 7
-        dq[J5_IDX] = -amp * speed * math.sin(phi[0])
-        dq[J6_IDX] =  amp * speed * math.cos(phi[0])
+        dq[J5_IDX] = -amp * s * math.sin(p)
+        dq[J6_IDX] =  amp * s * math.cos(p)
         return JointVelocities(dq)
 
     api.robot_control(joint_velocities_handle=callback)
