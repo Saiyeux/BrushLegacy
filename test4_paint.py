@@ -12,9 +12,9 @@ test4_paint.py — 实战画画：执行完整动作序列
   WASH  → 移动到水筒执行圆锥涮笔
 
 Usage:
-    python test4_paint.py --ip 192.170.10.200
-    python test4_paint.py --ip 192.170.10.200 --npz data/trajectories/Tiger_actions.npz
-    python test4_paint.py --ip 192.170.10.200 --dry_run   (只打印不执行)
+    python test4_paint.py
+    python test4_paint.py --npz data/trajectories/Tiger_actions.npz
+    python test4_paint.py --dry_run   (只打印不执行)
 """
 
 import argparse
@@ -29,6 +29,7 @@ sys.path.insert(0, "src")
 from palette_cfg   import PALETTE_NAMES, DEFAULT_CAL_PATH
 from wash_action   import cone_trajectory, do_wash, CONE_SPEED, DIP_SPEED, HOVER_SPEED
 from test3_dip_wash import dip_slot, wash   # reuse dip + wash logic
+from config_loader import robot_ip
 
 
 ACTION_PAINT = 0
@@ -173,7 +174,6 @@ def execute(api, npz_path: str, palette_cal: dict, canvas: dict,
 
 def main():
     p = argparse.ArgumentParser(description="实战画画: 执行完整 paint/dip/wash 序列")
-    p.add_argument("--ip",       default=None,          help="机械臂 IP (dry_run 时可省略)")
     p.add_argument("--npz",      default=DEFAULT_NPZ,   help="动作序列 NPZ")
     p.add_argument("--cal",      default=DEFAULT_CAL_PATH, help="调色盘标定文件")
     p.add_argument("--canvas",   default=CANVAS_CAL_PATH,  help="画布标定文件")
@@ -196,19 +196,16 @@ def main():
         execute(None, args.npz, palette_cal, canvas, dry_run=True)
         return
 
-    if args.ip is None:
-        print("[ERROR] 需要 --ip，或者加 --dry_run 只预览序列")
-        sys.exit(1)
-
     try:
         from pyfranka.franka_pybind import FrankaApi
     except ImportError:
         print("[ERROR] pyfranka 未找到")
         sys.exit(1)
 
-    print(f"\n  连接机械臂 {args.ip} …")
+    ip = robot_ip()
+    print(f"\n  连接机械臂 {ip} …")
     api = FrankaApi()
-    api.init_config(args.ip, log_size=1000)
+    api.init_config(ip, log_size=1000)
     api.set_default_behavior()
     st = api.readOnce()
     if st.robot_mode.name == "kReflex":

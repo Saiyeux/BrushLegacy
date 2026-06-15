@@ -13,8 +13,8 @@ test3_dip_wash.py — 轮流蘸色+涮笔，共6次
 其他格子位置由参考格子坐标 + 栅格间距计算，用 Cartesian 直线运动到达。
 
 Usage:
-    python test3_dip_wash.py --ip 192.170.10.200
-    python test3_dip_wash.py --ip 192.170.10.200 --cal data/calibration/palette.npy --n 2 --amp 5
+    python test3_dip_wash.py
+    python test3_dip_wash.py --cal data/calibration/palette.npy --n 2 --amp 5
 """
 
 import argparse
@@ -27,6 +27,7 @@ import numpy as np
 sys.path.insert(0, "src")
 from palette_cfg import PALETTE_RGB, PALETTE_NAMES, N_SLOTS, DEFAULT_CAL_PATH
 from wash_action  import cone_trajectory, CONE_SPEED, DIP_SPEED, HOVER_SPEED
+from config_loader import robot_ip
 
 
 def _swatch(r, g, b):
@@ -113,7 +114,6 @@ def wash(api, cal, n_rot, amp_deg):
 
 def main():
     p = argparse.ArgumentParser(description="蘸色+涮笔 循环测试 (6 槽各一次)")
-    p.add_argument("--ip",  required=True)
     p.add_argument("--cal", default=DEFAULT_CAL_PATH)
     p.add_argument("--n",   type=int,   default=2,   help="涮笔圈数 (默认 2)")
     p.add_argument("--amp", type=float, default=5.0, help="圆锥半角 度 (默认 5)")
@@ -133,9 +133,10 @@ def main():
         print("[ERROR] pyfranka 未找到")
         sys.exit(1)
 
-    print(f"\n  连接机械臂 {args.ip} …")
+    ip = robot_ip()
+    print(f"\n  连接机械臂 {ip} …")
     api = FrankaApi()
-    api.init_config(args.ip, log_size=1000)
+    api.init_config(ip, log_size=1000)
     api.set_default_behavior()
     st = api.readOnce()
     if st.robot_mode.name == "kReflex":

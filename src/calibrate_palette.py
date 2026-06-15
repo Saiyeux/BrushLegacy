@@ -55,6 +55,8 @@ Usage
   python src/calibrate_palette.py --show data/calibration/palette.npy
 """
 
+from __future__ import annotations
+
 import argparse
 import sys
 from pathlib import Path
@@ -151,7 +153,7 @@ def calibrate(ref_slot: int, ip: str | None, manual: bool,
     api = None
     if not manual:
         if ip is None:
-            print("[ERROR] Provide --ip or use --manual.")
+            print("[ERROR] robot.ip not set in config.yaml — use --manual instead.")
             sys.exit(1)
         api = _connect_robot(ip)
         print("  TIP: Hold the wrist guide button to hand-guide the robot.\n"
@@ -270,8 +272,8 @@ Slot numbering (3×8 grid, colours at col 0 and col 4):
   0=Red  1=Yellow  2=Blue  3=Green  4=Orange  5=Purple
 
 Examples:
-  # RT box — calibrate slot 0 (Red) as reference:
-  python src/calibrate_palette.py --ref_slot 0 --ip 192.170.10.200
+  # RT box — calibrate slot 0 (Red) as reference (IP from config.yaml):
+  python src/calibrate_palette.py --ref_slot 0
 
   # MacBook — manual XYZ entry:
   python src/calibrate_palette.py --ref_slot 0 --manual
@@ -291,8 +293,6 @@ extra shake positions needed.
     p.add_argument("--ref_slot", type=int, default=0,
                    choices=range(N_SLOTS),
                    help="Which slot to physically calibrate as reference (default 0 = Red)")
-    p.add_argument("--ip",  default=None,
-                   help="Robot IP address (required unless --manual)")
     p.add_argument("--manual", action="store_true",
                    help="Enter XYZ manually — no robot connection needed")
     p.add_argument("--pitch_x", type=float, default=SLOT_PITCH_X,
@@ -311,7 +311,9 @@ extra shake positions needed.
         return
 
     out_path = Path(args.out) if args.out else ROOT / DEFAULT_CAL_PATH
-    calibrate(args.ref_slot, args.ip, args.manual,
+    from config_loader import robot_ip as _robot_ip
+    ip = None if args.manual else _robot_ip()
+    calibrate(args.ref_slot, ip, args.manual,
               args.pitch_x, args.pitch_y, out_path)
 
 

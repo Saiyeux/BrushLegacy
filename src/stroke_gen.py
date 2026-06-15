@@ -23,6 +23,8 @@ Usage:
     python src/stroke_gen.py --image data/input/Tiger.png --max_strokes 300
 """
 
+from __future__ import annotations
+
 import argparse
 import math
 import time

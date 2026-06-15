@@ -18,6 +18,8 @@ Usage:
     python src/stroke_frames.py --layer3 ... --step 5
 """
 
+from __future__ import annotations
+
 import argparse
 import math
 from pathlib import Path

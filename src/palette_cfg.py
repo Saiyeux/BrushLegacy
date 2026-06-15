@@ -17,6 +17,8 @@ Slot indices:
 Water cup: separate calibrated position, used for brush washing.
 """
 
+from __future__ import annotations
+
 import math
 from pathlib import Path
 

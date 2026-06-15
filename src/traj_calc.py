@@ -35,6 +35,8 @@ Usage:
         --canvas 512 --max_strokes 300
 """
 
+from __future__ import annotations
+
 import argparse
 from pathlib import Path
 

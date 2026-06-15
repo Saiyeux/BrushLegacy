@@ -12,8 +12,8 @@ test2_calibrate.py — 标定第一个颜色 + 水筒，计算并显示所有格
 输出: data/calibration/palette.npy
 
 Usage:
-    python test2_calibrate.py --ip 192.170.10.200
-    python test2_calibrate.py --ip 192.170.10.200 --ref_slot 0 --pitch_x 0.035 --pitch_y 0.035
+    python test2_calibrate.py
+    python test2_calibrate.py --ref_slot 0 --pitch_x 0.035 --pitch_y 0.035
 """
 
 import argparse
@@ -28,6 +28,7 @@ from palette_cfg import (
     PALETTE_RGB, PALETTE_NAMES, SLOT_GRID, N_SLOTS,
     SLOT_PITCH_X, SLOT_PITCH_Y, DEFAULT_CAL_PATH,
 )
+from config_loader import robot_ip
 
 
 def _swatch(r, g, b):
@@ -40,7 +41,6 @@ def _fmt(xyz):
 
 def main():
     p = argparse.ArgumentParser(description="标定调色盘: 第一个格子 + 水筒")
-    p.add_argument("--ip",       required=True)
     p.add_argument("--ref_slot", type=int, default=0, choices=range(N_SLOTS),
                    help="参考格子索引 (默认 0 = Red)")
     p.add_argument("--pitch_x",  type=float, default=SLOT_PITCH_X,
@@ -56,9 +56,10 @@ def main():
         print("[ERROR] pyfranka 未找到")
         sys.exit(1)
 
-    print(f"\n  连接机械臂 {args.ip} …")
+    ip = robot_ip()
+    print(f"\n  连接机械臂 {ip} …")
     api = FrankaApi()
-    api.init_config(args.ip, log_size=1000)
+    api.init_config(ip, log_size=1000)
     api.set_default_behavior()
     st = api.readOnce()
     if st.robot_mode.name == "kReflex":

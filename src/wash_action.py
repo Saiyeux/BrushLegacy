@@ -39,6 +39,8 @@ Standalone test:
     python src/wash_action.py --cal data/calibration/palette.npy --ip 192.170.10.200 --n 3 --amp 6
 """
 
+from __future__ import annotations
+
 import argparse
 import math
 import time
@@ -65,7 +67,7 @@ CONE_STEPS   = 24    # waypoints per full rotation (higher = smoother)
 def cone_trajectory(q_center: np.ndarray,
                     n_rot: int   = CONE_N_ROT,
                     amp_deg: float = CONE_AMP_DEG,
-                    steps: int   = CONE_STEPS) -> list[np.ndarray]:
+                    steps: int   = CONE_STEPS):
     """Compute joint waypoints for the conical sweep.
 
     Args:
@@ -213,24 +215,22 @@ Examples:
   # Preview trajectory (no robot):
   python src/wash_action.py --cal data/calibration/palette.npy --preview
 
-  # Run on robot:
-  python src/wash_action.py --cal data/calibration/palette.npy --ip 192.170.10.200
+  # Run on robot (IP from config.yaml):
+  python src/wash_action.py --cal data/calibration/palette.npy
 
   # 3 rotations, 6-degree cone:
-  python src/wash_action.py --cal data/calibration/palette.npy --ip 192.170.10.200 --n 3 --amp 6
+  python src/wash_action.py --cal data/calibration/palette.npy --n 3 --amp 6
 """)
     p.add_argument("--cal",     required=True, help="Calibration file (palette.npy)")
-    p.add_argument("--ip",      default=None,  help="Robot IP (omit for --preview)")
     p.add_argument("--n",       type=int,   default=CONE_N_ROT,   help="Number of rotations")
     p.add_argument("--amp",     type=float, default=CONE_AMP_DEG, help="Cone half-angle (degrees)")
     p.add_argument("--preview", action="store_true",
                    help="Print trajectory ranges only, do not move the robot")
     args = p.parse_args()
 
-    if not args.preview and args.ip is None:
-        p.error("Provide --ip to run on robot, or --preview to inspect trajectory only.")
-
-    _run_test(args.ip, args.cal, args.n, args.amp, args.preview)
+    from config_loader import robot_ip
+    ip = None if args.preview else robot_ip()
+    _run_test(ip, args.cal, args.n, args.amp, args.preview)
 
 
 if __name__ == "__main__":

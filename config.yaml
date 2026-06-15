@@ -20,6 +20,7 @@ stroke:
 
 # Robot coordinate conversion (franka_new / RT box)
 robot:
+  ip: "192.170.10.200"
   canvas_side_m: 0.48       # physical canvas side length (m) — matches side0 in original code
   canvas_image_size: 512    # pixel size used for coordinate normalisation
   calibration_matrix: "data/calibration/matrix.npy"     # end-effector transform
