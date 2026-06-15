@@ -1,22 +1,21 @@
 """
-test2_calibrate.py — 标定第一个颜色 + 水筒，计算并显示所有格子位置
+test2_calibrate.py — 标定调色盘 + 水筒位置
 
-只需手动引导4步:
-  1. HOVER 第一个颜料格上方
-  2. DIP   进颜料（配置蘸墨深度）
-  3. HOVER 水筒上方
-  4. DIP   进水筒（笔尖入水）
+4 个交互步骤:
+  1. 拖动到 Red(0,0) Hover-1 位置（颜料格正上方）→ 记录关节角 + SE3
+  2. 拖动到 Yellow(0,4) Hover-1 位置（同行第4格）→ 确定列方向
+  3. 拖动到水筒 Hover-2 位置（水筒正上方，同时作为过渡高度）→ 记录关节角
+  4. 拖动到水筒 Dip 位置（笔尖入水中心，圆锥扫掠定点）→ 记录关节角
 
-其他5个格子的坐标由栅格间距自动计算。
-
-输出: data/calibration/palette.npy
+由 Red + Yellow 自动计算列方向，由垂直关系推算行方向。
+所有颜料格位置从 Red 参考点按格子间距计算。
+蘸墨深度从 config.yaml 读取 palette.dip_depth_mm。
 
 Usage:
     python test2_calibrate.py
-    python test2_calibrate.py --ref_slot 0 --pitch_x 0.035 --pitch_y 0.035
 """
+from __future__ import annotations
 
-import argparse
 import sys
 import time
 from pathlib import Path
@@ -25,10 +24,10 @@ import numpy as np
 
 sys.path.insert(0, "src")
 from palette_cfg import (
-    PALETTE_RGB, PALETTE_NAMES, SLOT_GRID, N_SLOTS,
-    SLOT_PITCH_X, SLOT_PITCH_Y, DEFAULT_CAL_PATH,
+    SLOT_NAMES, SLOT_RGB, SLOT_GRID, N_SLOTS,
+    REF_SLOT, REF_SLOT2, DEFAULT_CAL_PATH,
 )
-from config_loader import robot_ip
+from config_loader import load_config, robot_ip
 
 
 def _swatch(r, g, b):
@@ -39,16 +38,24 @@ def _fmt(xyz):
     return f"[{xyz[0]:.4f}, {xyz[1]:.4f}, {xyz[2]:.4f}]"
 
 
+def _record(api, prompt: str):
+    """Wait for user, then read current EE pose and joint angles."""
+    input(f"\n  → {prompt}\n    就位后按 Enter 记录 … ")
+    st  = api.readOnce()
+    T   = np.array(st.O_T_EE).reshape(4, 4, order='F')
+    q   = list(st.q)
+    xyz = T[:3, 3].copy()
+    print(f"    已记录: {_fmt(xyz)}")
+    return xyz, q, T
+
+
 def main():
-    p = argparse.ArgumentParser(description="标定调色盘: 第一个格子 + 水筒")
-    p.add_argument("--ref_slot", type=int, default=0, choices=range(N_SLOTS),
-                   help="参考格子索引 (默认 0 = Red)")
-    p.add_argument("--pitch_x",  type=float, default=SLOT_PITCH_X,
-                   help=f"列间距 m (默认 {SLOT_PITCH_X})")
-    p.add_argument("--pitch_y",  type=float, default=SLOT_PITCH_Y,
-                   help=f"行间距 m (默认 {SLOT_PITCH_Y})")
-    p.add_argument("--out",      default=DEFAULT_CAL_PATH)
-    args = p.parse_args()
+    cfg          = load_config()
+    cell_w_m     = cfg["palette"]["cell_width_mm"]  / 1000.0   # column pitch
+    cell_h_m     = cfg["palette"]["cell_height_mm"] / 1000.0   # row pitch
+    dip_depth    = cfg["palette"]["dip_depth_mm"]   / 1000.0
+
+    ip = robot_ip()
 
     try:
         from pyfranka.franka_pybind import FrankaApi
@@ -56,7 +63,15 @@ def main():
         print("[ERROR] pyfranka 未找到")
         sys.exit(1)
 
-    ip = robot_ip()
+    out_path = Path(DEFAULT_CAL_PATH)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    print(f"\n{'='*60}")
+    print(f"  调色盘标定")
+    print(f"  格子宽: {cell_w_m*1000:.0f} mm  高: {cell_h_m*1000:.0f} mm   蘸墨深度: {dip_depth*1000:.0f} mm")
+    print(f"{'='*60}")
+    print("  操作方式: 按住引导按钮手动拖动机械臂，就位后松开，按 Enter\n")
+
     print(f"\n  连接机械臂 {ip} …")
     api = FrankaApi()
     api.init_config(ip, log_size=1000)
@@ -64,92 +79,99 @@ def main():
     st = api.readOnce()
     if st.robot_mode.name == "kReflex":
         api.automatic_error_recovery()
-    print("  机械臂就绪。可手动引导（按住引导按钮）。\n")
+    print("  就绪。\n")
 
-    ref = args.ref_slot
-    r, g, b = PALETTE_RGB[ref]
-    name    = PALETTE_NAMES[ref]
+    # ── Step 1: Red (0,0) Hover-1 ─────────────────────────────────────────────
+    r0, g0, b0 = SLOT_RGB[REF_SLOT]
+    print(f"  ─── 步骤 1/4  Red {_swatch(r0,g0,b0)} (0,0) Hover-1 ───")
+    print("  Hover-1 = 颜料格正上方（蘸墨起始高度）")
+    red_xyz, red_q, red_T = _record(api, "拖动到 Red 颜料格正上方")
 
-    def record(step_label):
-        st = api.readOnce()
-        T  = np.array(st.O_T_EE).reshape(4, 4, order='F')
-        xyz = T[:3, 3].copy()
-        q   = list(st.q)
-        print(f"       当前 EE: {_fmt(xyz)}")
-        input(f"       {step_label}  [Enter 记录] ")
-        st  = api.readOnce()
-        T   = np.array(st.O_T_EE).reshape(4, 4, order='F')
-        xyz = T[:3, 3].copy()
-        q   = list(st.q)
-        T_full = T.copy()
-        print(f"       已记录: {_fmt(xyz)}\n")
-        return xyz, q, T_full
+    # ── Step 2: Yellow (0,4) Hover-1 ─────────────────────────────────────────
+    r1, g1, b1 = SLOT_RGB[REF_SLOT2]
+    print(f"\n  ─── 步骤 2/4  Yellow {_swatch(r1,g1,b1)} (0,4) Hover-1 ───")
+    print("  同一行，向右数第4格（用于确定列方向）")
+    yellow_xyz, _, _ = _record(api, "拖动到 Yellow 颜料格正上方")
 
-    # ── Step 1: Hover over ref slot ───────────────────────────────────────────
-    print(f"  ── 步骤 1/4  HOVER — 参考格子 {ref} {_swatch(r,g,b)} {name} 上方 ──")
-    hover_xyz, hover_q, hover_T = record("引导笔到颜料格上方 (安全高度)")
+    # Compute grid axes
+    col_vec  = yellow_xyz - red_xyz                     # Red → Yellow: 4 cols
+    col_dir  = col_vec / np.linalg.norm(col_vec)       # unit vector
+    col_n_cells = SLOT_GRID[REF_SLOT2][1] - SLOT_GRID[REF_SLOT][1]  # = 4
+    col_pitch_measured = np.linalg.norm(col_vec) / col_n_cells
+    print(f"\n  列方向: {[f'{v:.3f}' for v in col_dir]}")
+    print(f"  列实测间距: {col_pitch_measured*1000:.1f} mm  (config cell_width: {cell_w_m*1000:.0f} mm)")
 
-    # ── Step 2: Dip into ref slot ─────────────────────────────────────────────
-    print(f"  ── 步骤 2/4  DIP — 蘸墨到 {name} ──")
-    dip_xyz, dip_q, dip_T = record("引导笔尖进入颜料 (合适深度 = 蘸墨深度标定)")
+    z_up    = np.array([0.0, 0.0, 1.0])
+    row_dir = np.cross(z_up, col_dir)
+    row_dir /= np.linalg.norm(row_dir)
+    print(f"  行方向: {[f'{v:.3f}' for v in row_dir]}")
+    print(f"  行间距 (config cell_height): {cell_h_m*1000:.0f} mm")
 
-    hover_z_offset = float(hover_xyz[2] - dip_xyz[2])
-    print(f"  蘸墨深度 (hover Z − dip Z): {hover_z_offset*1000:.1f} mm\n")
+    # ── Step 3: Water Hover-2 ─────────────────────────────────────────────────
+    print(f"\n  ─── 步骤 3/4  水筒 Hover-2（过渡高度）───")
+    print("  Hover-2 = 水筒正上方，也是所有过渡动作的通道高度")
+    water_hover_xyz, water_hover_q, _ = _record(api, "拖动到水筒正上方")
 
-    # ── Step 3: Hover over water cup ──────────────────────────────────────────
-    print("  ── 步骤 3/4  HOVER — 水筒上方 ──")
-    water_hover_xyz, water_hover_q, _ = record("引导笔到水筒上方")
+    # ── Step 4: Water Dip ─────────────────────────────────────────────────────
+    print(f"\n  ─── 步骤 4/4  水筒 Dip（圆锥扫掠定点）───")
+    print("  笔尖入水中心，此处将执行 J5+J6 圆锥扫掠")
+    water_dip_xyz, water_dip_q, _ = _record(api, "拖动到笔尖入水位置")
 
-    # ── Step 4: Dip into water cup ────────────────────────────────────────────
-    print("  ── 步骤 4/4  DIP — 笔尖入水 (中心位置) ──")
-    water_dip_xyz, water_dip_q, _ = record("引导笔尖进水 (圆锥扫掠的定点)")
+    # ── Compute all slot positions ─────────────────────────────────────────────
+    ref_row, ref_col = SLOT_GRID[REF_SLOT]
+    slot_hover_T = {}
+    slot_dip_T   = {}
 
-    # ── Compute all slot positions ────────────────────────────────────────────
-    ref_row, ref_col = SLOT_GRID[ref]
-
-    print(f"\n  ═══ 所有格子计算坐标 (pitch x={args.pitch_x*1000:.1f}mm y={args.pitch_y*1000:.1f}mm) ═══")
-    print(f"  {'槽':>4}  Swatch  {'名称':<10}  {'DIP XYZ (m)':<42}  {'HOVER Z (m)'}")
+    print(f"\n  ═══ 所有格子计算位置 ═══")
+    print(f"  {'槽':>3}  Swatch  {'名称':<8}  {'Grid':>6}  {'Hover-1 XYZ':^38}  Dip Z")
     print(f"  {'─'*80}")
 
-    slot_xyz_all = {}
     for i in range(N_SLOTS):
-        ri, ci     = SLOT_GRID[i]
-        dr, dc     = ri - ref_row, ci - ref_col
-        dip_i_xyz  = [
-            dip_xyz[0] + dc * args.pitch_x,
-            dip_xyz[1] + dr * args.pitch_y,
-            dip_xyz[2],
-        ]
-        hover_i_xyz = list(dip_i_xyz)
-        hover_i_xyz[2] += hover_z_offset
-        slot_xyz_all[i] = {"dip": dip_i_xyz, "hover": hover_i_xyz}
+        ri, ci = SLOT_GRID[i]
+        dr = ri - ref_row
+        dc = ci - ref_col
+        hover_xyz = red_xyz + dr * cell_h_m * row_dir + dc * cell_w_m * col_dir
+        dip_xyz   = hover_xyz.copy()
+        dip_xyz[2] -= dip_depth
 
-        ri_c, gi_c, bi_c = PALETTE_RGB[i]
-        tag = " ← ref" if i == ref else ""
-        print(f"  {i:4d}   {_swatch(ri_c,gi_c,bi_c)}  {PALETTE_NAMES[i]:<10}  "
-              f"{_fmt(dip_i_xyz):<42}  {hover_i_xyz[2]:.4f}{tag}")
+        # Build SE3 (keep Red's orientation, change translation)
+        T_hover = red_T.copy()
+        T_hover[:3, 3] = hover_xyz
+        T_dip   = red_T.copy()
+        T_dip[:3, 3]   = dip_xyz
+
+        slot_hover_T[i] = T_hover.tolist()
+        slot_dip_T[i]   = T_dip.tolist()
+
+        r, g, b = SLOT_RGB[i]
+        tag = " ← ref" if i == REF_SLOT else (" ← ref2" if i == REF_SLOT2 else "")
+        print(f"  {i:3d}   {_swatch(r,g,b)}  {SLOT_NAMES[i]:<8}  "
+              f"({ri},{ci})  {_fmt(hover_xyz)}  {dip_xyz[2]:.4f}{tag}")
 
     # ── Save ──────────────────────────────────────────────────────────────────
     cal = {
-        "ref_slot":        ref,
-        "ref_hover_xyz":   hover_xyz.tolist(),
-        "ref_dip_xyz":     dip_xyz.tolist(),
-        "ref_hover_T":     hover_T.tolist(),   # full SE3 for computing other slots
-        "ref_hover_q":     hover_q,
-        "ref_dip_q":       dip_q,
-        "hover_z_offset":  hover_z_offset,
-        "slot_pitch_xy":   [args.pitch_x, args.pitch_y],
-        "water_hover_xyz": water_hover_xyz.tolist(),
-        "water_cup_xyz":   water_dip_xyz.tolist(),
+        # Red reference
+        "red_hover_q":   red_q,
+        "red_hover_T":   red_T.tolist(),
+        "red_hover_xyz": red_xyz.tolist(),
+        # Grid axes
+        "col_dir":       col_dir.tolist(),
+        "row_dir":       row_dir.tolist(),
+        "cell_w_m":      float(cell_w_m),
+        "cell_h_m":      float(cell_h_m),
+        "dip_depth_m":   float(dip_depth),
+        # Water cup
         "water_hover_q":   water_hover_q,
+        "water_hover_xyz": water_hover_xyz.tolist(),
         "water_dip_q":     water_dip_q,
-        "slot_xyz_all":    slot_xyz_all,       # pre-computed for quick lookup
+        "water_dip_xyz":   water_dip_xyz.tolist(),
+        # Pre-computed slot positions
+        "slot_hover_T":  slot_hover_T,
+        "slot_dip_T":    slot_dip_T,
     }
 
-    out = Path(args.out)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    np.save(str(out), cal)
-    print(f"\n  ✓ 保存 → {out}\n")
+    np.save(str(out_path), cal)
+    print(f"\n  ✓ 保存 → {out_path}\n")
 
 
 if __name__ == "__main__":

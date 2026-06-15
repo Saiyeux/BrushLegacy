@@ -56,6 +56,7 @@ HOVER_SPEED  = 1.0   # fast transit to/from water cup
 DIP_SPEED    = 0.15  # slow descent into / ascent from water
 CONE_SPEED   = 0.08  # very slow during the conical sweep
 SOAK_SEC     = 0.3   # pause after dipping before starting to sweep
+DRIP_SEC     = 3.0   # wait at hover after sweep for water to drip off
 
 CONE_AMP_DEG  = 5.0   # default cone half-angle (degrees) — keep small
 CONE_N_ROT    = 2     # default number of full rotations
@@ -70,25 +71,24 @@ def cone_sweep(api, q_center: np.ndarray,
                speed: float   = CONE_SPEED) -> None:
     """Execute conical sweep as a single continuous robot_control call.
 
-    Uses a JointPositions callback — phi advances at `speed` rad/s, so the
-    robot never stops between waypoints. One full rotation takes 2π/speed s.
+    Uses JointVelocities callback — J5 and J6 rotate at `speed` rad/s in
+    a coordinated circle. One full rotation takes 2π/speed seconds.
     """
-    from pyfranka.franka_pybind import JointPositions, JointPositionsFinished
-    amp        = math.radians(amp_deg)
-    total_phi  = 2.0 * math.pi * n_rot
-    phi        = [0.0]
+    from pyfranka.franka_pybind import JointVelocities, JointVelocitiesFinished
+    amp       = math.radians(amp_deg)
+    total_phi = 2.0 * math.pi * n_rot
+    phi       = [0.0]
 
     def callback(robot_state, period):
         phi[0] += speed * period.toSec()
-        q = q_center.copy()
         if phi[0] >= total_phi:
-            # return to centre and finish
-            return JointPositionsFinished(JointPositions(q.tolist()))
-        q[J5_IDX] = q_center[J5_IDX] + amp * math.cos(phi[0])
-        q[J6_IDX] = q_center[J6_IDX] + amp * math.sin(phi[0])
-        return JointPositions(q.tolist())
+            return JointVelocitiesFinished(JointVelocities([0.0] * 7))
+        dq = [0.0] * 7
+        dq[J5_IDX] = -amp * speed * math.sin(phi[0])
+        dq[J6_IDX] =  amp * speed * math.cos(phi[0])
+        return JointVelocities(dq)
 
-    api.robot_control(joint_positions_handle=callback)
+    api.robot_control(joint_velocities_handle=callback)
 
 
 # ── Execution ─────────────────────────────────────────────────────────────────
@@ -103,8 +103,9 @@ def do_wash(api, cal: dict,
     Sequence:
       1. MotionGenerator → water cup hover
       2. MotionGenerator → dip into water
-      3. cone_sweep (single continuous robot_control call)
-      4. MotionGenerator → lift out
+      3. cone_sweep (continuous JointVelocities)
+      4. CartesianPose → lift 3 cm straight up, hold 3 s for drip
+      5. MotionGenerator → return to water cup hover
     """
     from pyfranka.franka_pybind import MotionGenerator
     q_hover = np.array(cal["water_hover_q"])
@@ -127,7 +128,10 @@ def do_wash(api, cal: dict,
               f"speed={speed} rad/s  (~{t_rot*n_rot:.1f}s)")
     cone_sweep(api, q_dip, n_rot=n_rot, amp_deg=amp_deg, speed=speed)
 
-    go(q_hover, DIP_SPEED, "↑ lift out of water")
+    go(q_hover, DIP_SPEED, "↑ lift to water cup hover")
+    if verbose:
+        print(f"  [wash] ⏳ drip wait {DRIP_SEC} s …")
+    time.sleep(DRIP_SEC)
 
     if verbose:
         print("  [wash] done ✓")

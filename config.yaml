@@ -18,6 +18,12 @@ stroke:
   p_dim: 16            # stroke parameter dimensions
   layers: [3, 4, 5]   # brush sizes: large → small
 
+# Palette calibration parameters (measure physically and fill in)
+palette:
+  cell_width_mm: 30       # grid cell width  (column direction, Red → Yellow)
+  cell_height_mm: 30      # grid cell height (row direction, Red → Orange)
+  dip_depth_mm: 8         # how many mm to descend below hover-1 when dipping paint
+
 # Robot coordinate conversion (franka_new / RT box)
 robot:
   ip: "192.170.10.200"
