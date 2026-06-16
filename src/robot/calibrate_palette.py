@@ -1,63 +1,32 @@
 """
-calibrate_palette.py — Record ONE reference palette slot + water cup position.
+calibrate_palette.py — Direct per-slot palette calibration (1 + N_SLOTS + 2 steps).
 
-Physical setup
---------------
-  Palette: 3×8 grid, 6 paint colours at every 4th column (col 0 and col 4).
+Workflow
+--------
+1. Enter descent depth (mm) — how far the brush drops from hover into paint.
+For each slot (大红 → 橘红 → 淡黄 → 翠绿 → 湖蓝 → 紫色 → 黑色):
+   n. Hand-guide robot to HOVER above that slot → press Enter.
+After all slots:
+   n+1. Hand-guide robot to HOVER above the water cup → press Enter.
+   n+2. Hand-guide robot to DIP into the water → press Enter.
 
-     col0   col1  col2  col3   col4  col5  col6  col7
-row0: [R]   [ ]   [ ]   [ ]   [G]   [ ]   [ ]   [ ]
-row1: [Y]   [ ]   [ ]   [ ]   [O]   [ ]   [ ]   [ ]
-row2: [B]   [ ]   [ ]   [ ]   [P]   [ ]   [ ]   [ ]
-
-  Only ONE slot needs to be physically calibrated.  All other slot positions
-  are derived from the row/column pitch (SLOT_PITCH_X, SLOT_PITCH_Y in palette_cfg.py).
-
-  Water cup: a separate container the robot shakes in to clean the brush.
-
-Workflow (6 steps)
-------------------
-1. Hand-guide robot to HOVER above 大红 (slot 0) → press Enter.
-2. Hand-guide robot to DIP into 大红 → press Enter.
-3. Hand-guide robot to DIP into 橘红 (slot 1, col direction ref) → press Enter.
-4. Hand-guide robot to DIP into 淡黄 (slot 2, row direction ref) → press Enter.
-5. Hand-guide robot to HOVER above the water cup → press Enter.
-6. Hand-guide robot to DIP into the water → press Enter.
-
-Steps 3 and 4 define the column and row direction vectors in robot space,
-so the palette does not need to be axis-aligned.
+No interpolation or direction vectors — every slot is recorded directly.
 
 Output: data/calibration/palette.npy
   {
-    ref_slot       : int          # always 0 (大红)
-    ref_hover_xyz  : [x,y,z]     # hover above 大红
-    ref_dip_xyz    : [x,y,z]     # dip into 大红
-    ref_hover_q    : [7]  | None
-    ref_dip_q      : [7]  | None
-    hover_z_offset : float        # Z(hover) − Z(dip), applied to all slots
-    col_vec_xy     : [dx,dy]      # XY displacement per column unit (大红→橘红 / 4)
-    row_vec_xy     : [dx,dy]      # XY displacement per row unit   (大红→淡黄 / 1)
-    slot_pitch_xy  : [|col|,|row|]# magnitudes, kept for display / backward compat
+    hover_z_offset : float         # metres; dip Z = hover Z − hover_z_offset
+    slot_hover_xyz : [[x,y,z], …]  # N_SLOTS entries, one per slot
     water_hover_xyz: [x,y,z]
-    water_cup_xyz  : [x,y,z]
-    water_hover_q  : [7]  | None
-    water_dip_q    : [7]  | None
+    water_cup_xyz  : [x,y,z]       # = dip position in water
+    water_hover_q  : [7] | None
+    water_dip_q    : [7] | None
   }
 
 Usage
 -----
-  # Robot connected (RT box):
-  python src/calibrate_palette.py --ref_slot 0 --ip 192.170.10.200
-
-  # Manual XYZ entry (no robot needed, e.g. on MacBook):
-  python src/calibrate_palette.py --ref_slot 0 --manual
-
-  # Custom pitch (default 35mm × 35mm):
-  python src/calibrate_palette.py --manual --pitch_x 0.040 --pitch_y 0.035
-
-  # Show a saved calibration:
-  python src/calibrate_palette.py --show
-  python src/calibrate_palette.py --show data/calibration/palette.npy
+  python src/robot/calibrate_palette.py
+  python src/robot/calibrate_palette.py --manual
+  python src/robot/calibrate_palette.py --show
 """
 
 from __future__ import annotations
@@ -71,9 +40,7 @@ sys.path.insert(0, str(Path(__file__).parent))         # src/robot/
 import numpy as np
 
 from palette_cfg import (
-    PALETTE_RGB, PALETTE_NAMES, SLOT_GRID, N_SLOTS,
-    SLOT_PITCH_X, SLOT_PITCH_Y,
-    slot_xyz, all_slot_positions,
+    PALETTE_RGB, PALETTE_NAMES, N_SLOTS,
     DEFAULT_CAL_PATH,
     save_palette_cal,
 )
@@ -133,23 +100,17 @@ def _record_manual(prompt: str) -> tuple[np.ndarray, None]:
                 return np.array([float(p) for p in parts]), None
             except ValueError:
                 pass
-        print("     Need 3 floats, e.g.  0.720  0.281  0.200")
+        print("     Need 3 floats, e.g.  0.520  -0.310  0.175")
 
 
 # ── Main calibration ──────────────────────────────────────────────────────────
 
-_COL_REF_SLOT = 1   # 橘红 — same row as ref (row 0), col 4 → column direction
-_ROW_REF_SLOT = 2   # 淡黄 — same col as ref (col 0), row 1 → row direction
-
-
-def calibrate(ref_slot: int, ip: str | None, manual: bool, out_path: Path) -> None:
-    import math
-
+def calibrate(ip: str | None, manual: bool, out_path: Path) -> None:
+    total = 1 + N_SLOTS + 2
     print(f"\n{'='*64}")
-    print(f"  Palette calibration — 3-point reference")
-    print(f"  Slots: {PALETTE_NAMES[ref_slot]} (anchor) · "
-          f"{PALETTE_NAMES[_COL_REF_SLOT]} (col dir) · "
-          f"{PALETTE_NAMES[_ROW_REF_SLOT]} (row dir)")
+    print(f"  Palette calibration — direct per-slot  ({total} steps)")
+    print(f"  Slots: " + "  ".join(
+        f"{_swatch(*PALETTE_RGB[i])}{PALETTE_NAMES[i]}" for i in range(N_SLOTS)))
     print(f"  Output → {out_path}")
     print(f"{'='*64}\n")
 
@@ -162,72 +123,49 @@ def calibrate(ref_slot: int, ip: str | None, manual: bool, out_path: Path) -> No
         print("  TIP: Hold the wrist guide button to hand-guide the robot.\n"
               "       Release before pressing Enter to record.\n")
     else:
-        print("  Manual mode — type XYZ from a measurement tool or teach pendant.\n"
+        print("  Manual mode — type XYZ from a measurement tool.\n"
               "  Joint angles will not be recorded.\n")
 
-    # Unified record() regardless of mode
     if api:
         def record(prompt: str):
             return _record_robot(api, prompt)
     else:
         record = _record_manual
 
-    # ── Steps 1 & 2: Anchor slot (大红) ──────────────────────────────────────
-    name = PALETTE_NAMES[ref_slot]
-    print(f"  ─── Step 1/6: HOVER above {name} (slot {ref_slot}) ───")
-    hover_xyz, hover_q = record(f"Guide to HOVER above {name}.")
+    # ── Step 1: Descent depth ─────────────────────────────────────────────────
+    print("  ─── Step 1 / %d: Descent depth ───" % total)
+    while True:
+        raw = input("  Enter descent depth in mm (hover → dip): ").strip()
+        try:
+            hover_z_offset = float(raw) / 1000.0
+            break
+        except ValueError:
+            print("  Need a number, e.g.  20")
+    print(f"  hover_z_offset = {hover_z_offset * 1000:.1f} mm\n")
 
-    print(f"\n  ─── Step 2/6: DIP into {name} (slot {ref_slot}) ───")
-    dip_xyz, dip_q = record(f"Guide to DIP into {name} paint.")
+    # ── Steps 2 … N+1: Per-slot hover positions ───────────────────────────────
+    slot_hover_xyz: list[list[float]] = []
+    for i in range(N_SLOTS):
+        r, g, b = PALETTE_RGB[i]
+        name    = PALETTE_NAMES[i]
+        step    = i + 2
+        print(f"  ─── Step {step} / {total}: HOVER above {_swatch(r, g, b)} {name} (slot {i}) ───")
+        xyz, _ = record(f"Guide to HOVER above {name}.")
+        slot_hover_xyz.append(xyz.tolist())
+        print()
 
-    hover_z_offset = float(hover_xyz[2] - dip_xyz[2])
-    print(f"\n  hover_z_offset = {hover_z_offset*1000:.1f} mm  (hover Z − dip Z)")
-
-    # ── Step 3: Column-direction reference (橘红, col 4 same row) ────────────
-    col_name = PALETTE_NAMES[_COL_REF_SLOT]
-    _, ref_col = SLOT_GRID[ref_slot]
-    _, col_col = SLOT_GRID[_COL_REF_SLOT]
-    dcol = col_col - ref_col   # = 4
-
-    print(f"\n  ─── Step 3/6: DIP into {col_name} (slot {_COL_REF_SLOT} — col direction) ───")
-    col_dip_xyz, _ = record(f"Guide to DIP into {col_name} paint.")
-
-    col_vec_xy = (col_dip_xyz[:2] - dip_xyz[:2]) / dcol
-
-    # ── Step 4: Row-direction reference (淡黄, row 1 same col) ───────────────
-    row_name = PALETTE_NAMES[_ROW_REF_SLOT]
-    ref_row, _ = SLOT_GRID[ref_slot]
-    row_row, _ = SLOT_GRID[_ROW_REF_SLOT]
-    drow = row_row - ref_row   # = 1
-
-    print(f"\n  ─── Step 4/6: DIP into {row_name} (slot {_ROW_REF_SLOT} — row direction) ───")
-    row_dip_xyz, _ = record(f"Guide to DIP into {row_name} paint.")
-
-    row_vec_xy = (row_dip_xyz[:2] - dip_xyz[:2]) / drow
-
-    print(f"\n  col_vec_xy = [{col_vec_xy[0]*1000:+.2f}, {col_vec_xy[1]*1000:+.2f}] mm/col-unit")
-    print(f"  row_vec_xy = [{row_vec_xy[0]*1000:+.2f}, {row_vec_xy[1]*1000:+.2f}] mm/row-unit")
-
-    # ── Steps 5 & 6: Water cup ───────────────────────────────────────────────
-    print(f"\n  ─── Step 5/6: HOVER above water cup ───")
+    # ── Steps N+2 & N+3: Water cup ───────────────────────────────────────────
+    print(f"  ─── Step {total - 1} / {total}: HOVER above water cup ───")
     water_hover_xyz, water_hover_q = record("Guide to HOVER above the water cup.")
 
-    print(f"\n  ─── Step 6/6: DIP — brush tip touching water at centre ───")
-    print("      (brush vertical or at your normal painting angle,")
-    print("       tip just touching the water surface centre)")
-    water_dip_xyz, water_dip_q = record("Guide brush tip INTO the water (centre).")
+    print(f"\n  ─── Step {total} / {total}: DIP — brush tip into water ───")
+    print("      (tip just touching the water surface at the centre)")
+    water_dip_xyz, water_dip_q = record("Guide brush tip INTO the water.")
 
-    # ── Build calibration dict ────────────────────────────────────────────────
+    # ── Build and save ────────────────────────────────────────────────────────
     cal = {
-        "ref_slot":        ref_slot,
-        "ref_hover_xyz":   hover_xyz.tolist(),
-        "ref_dip_xyz":     dip_xyz.tolist(),
-        "ref_hover_q":     hover_q,
-        "ref_dip_q":       dip_q,
         "hover_z_offset":  hover_z_offset,
-        "col_vec_xy":      col_vec_xy.tolist(),
-        "row_vec_xy":      row_vec_xy.tolist(),
-        "slot_pitch_xy":   [math.hypot(*col_vec_xy), math.hypot(*row_vec_xy)],
+        "slot_hover_xyz":  slot_hover_xyz,
         "water_hover_xyz": water_hover_xyz.tolist(),
         "water_cup_xyz":   water_dip_xyz.tolist(),
         "water_hover_q":   water_hover_q,
@@ -238,39 +176,29 @@ def calibrate(ref_slot: int, ip: str | None, manual: bool, out_path: Path) -> No
     _print_summary(cal)
 
 
+# ── Summary display ───────────────────────────────────────────────────────────
+
 def _print_summary(cal: dict) -> None:
     from palette_cfg import slot_xyz as _slot_xyz
 
-    ref       = cal["ref_slot"]
-    hover_off = cal["hover_z_offset"]
-
-    if "col_vec_xy" in cal and "row_vec_xy" in cal:
-        cv = cal["col_vec_xy"]
-        rv = cal["row_vec_xy"]
-        vec_info = (f"col_vec=[{cv[0]*1000:+.2f},{cv[1]*1000:+.2f}] mm/col  "
-                    f"row_vec=[{rv[0]*1000:+.2f},{rv[1]*1000:+.2f}] mm/row")
-    else:
-        px, py = cal.get("slot_pitch_xy", [SLOT_PITCH_X, SLOT_PITCH_Y])
-        vec_info = f"pitch x={px*1000:.1f} mm  y={py*1000:.1f} mm  (scalar, old format)"
+    hover_off = float(cal.get("hover_z_offset", 0.02))
 
     print(f"\n  {'='*64}")
-    print(f"  Computed slot positions  (ref=slot {ref})")
-    print(f"  {vec_info}")
+    print(f"  Slot positions  (descent = {hover_off * 1000:.1f} mm)")
     print(f"  {'─'*64}")
     print(f"  {'Slot':>4}  Swatch  {'Name':<10}  "
-          f"{'Dip XYZ (m)':<40}  Hover Z (m)")
+          f"{'Hover XYZ (m)':<40}  Dip Z (m)")
     print(f"  {'─'*64}")
     for i in range(N_SLOTS):
         r, g, b = PALETTE_RGB[i]
         name    = PALETTE_NAMES[i]
-        dip_xyz = _slot_xyz(cal, i, "dip")
-        hover_z = dip_xyz[2] + hover_off
-        marker  = " ← ref" if i == ref else ""
-        print(f"  {i:4d}   {_swatch(r,g,b)}  {name:<10}  "
-              f"{_fmt_xyz(dip_xyz):<40}  {hover_z:.4f}{marker}")
+        hover   = _slot_xyz(cal, i, "hover")
+        dip_z   = hover[2] - hover_off
+        print(f"  {i:4d}   {_swatch(r, g, b)}  {name:<10}  "
+              f"{_fmt_xyz(hover):<40}  {dip_z:.4f}")
 
-    water   = cal["water_cup_xyz"]
     water_h = cal["water_hover_xyz"]
+    water   = cal["water_cup_xyz"]
     print(f"\n  Water cup:")
     print(f"    hover: {_fmt_xyz(water_h)}")
     print(f"    dip:   {_fmt_xyz(water)}")
@@ -286,42 +214,30 @@ def show_cal(path: Path) -> None:
     cal = np.load(str(path), allow_pickle=True).item()
     print(f"\n  Palette calibration: {path}")
     _print_summary(cal)
-    print(f"  ref_hover_q:  {_fmt_q(cal.get('ref_hover_q'))}")
-    print(f"  ref_dip_q:    {_fmt_q(cal.get('ref_dip_q'))}")
-    print(f"  water_hover_q:{_fmt_q(cal.get('water_hover_q'))}")
-    print(f"  water_dip_q:  {_fmt_q(cal.get('water_dip_q'))}\n")
+    print(f"  water_hover_q: {_fmt_q(cal.get('water_hover_q'))}")
+    print(f"  water_dip_q:   {_fmt_q(cal.get('water_dip_q'))}\n")
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
 def main():
     p = argparse.ArgumentParser(
-        description="Calibrate palette reference slot + water cup",
+        description="Calibrate palette — direct per-slot hover positions",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Slot numbering: 0=大红  1=橘红  2=淡黄  3=翠绿  4=湖蓝  5=紫色  6=黑色
+        epilog=f"""
+Slots: {' '.join(f'{i}={PALETTE_NAMES[i]}' for i in range(N_SLOTS))}
+
+Steps (total = 1 + {N_SLOTS} slots + 2 water = {1 + N_SLOTS + 2}):
+  1.       Enter descent depth in mm
+  2–{1+N_SLOTS}.    HOVER above each slot in order
+  {2+N_SLOTS}.     HOVER above water cup
+  {3+N_SLOTS}.     DIP into water
 
 Examples:
-  # RT box (IP from config.yaml):
   python src/robot/calibrate_palette.py
-
-  # MacBook — manual XYZ entry:
   python src/robot/calibrate_palette.py --manual
-
-  # Review saved calibration:
   python src/robot/calibrate_palette.py --show
-
-Steps (6 total):
-  1. HOVER above 大红 (anchor)
-  2. DIP  into 大红
-  3. DIP  into 橘红 → defines column direction vector
-  4. DIP  into 淡黄 → defines row direction vector
-  5. HOVER above water cup
-  6. DIP  into water (centre)
 """)
-    p.add_argument("--ref_slot", type=int, default=0,
-                   choices=range(N_SLOTS),
-                   help="Anchor slot (default 0 = 大红); col/row refs are slots 1 and 2")
     p.add_argument("--manual", action="store_true",
                    help="Enter XYZ manually — no robot connection needed")
     p.add_argument("--out", default=None,
@@ -336,9 +252,11 @@ Steps (6 total):
         return
 
     out_path = Path(args.out) if args.out else ROOT / DEFAULT_CAL_PATH
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
     from config_loader import robot_ip as _robot_ip
     ip = None if args.manual else _robot_ip()
-    calibrate(args.ref_slot, ip, args.manual, out_path)
+    calibrate(ip, args.manual, out_path)
 
 
 if __name__ == "__main__":

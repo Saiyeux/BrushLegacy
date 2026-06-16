@@ -98,13 +98,24 @@ def nearest_slot(r: int, g: int, b: int) -> int:
 
 
 def slot_xyz(cal: dict, slot: int, which: str = "dip") -> np.ndarray:
-    """Compute robot XYZ for a slot.
+    """Return robot XYZ for a palette slot.
 
-    Uses col_vec_xy / row_vec_xy (3-point calibration) when available;
-    falls back to slot_pitch_xy scalars for old calibration files.
-    Hover XYZ is always derived from dip XYZ + hover_z_offset so the
-    direction vectors stay consistent regardless of which='hover'.
+    New format (slot_hover_xyz list): each slot is stored directly.
+      hover → stored value
+      dip   → hover with Z lowered by hover_z_offset
+
+    Legacy formats (col_vec_xy or slot_pitch_xy) are still accepted.
     """
+    # ── New format: direct per-slot hover positions ───────────────────────────
+    if "slot_hover_xyz" in cal:
+        hover = np.array(cal["slot_hover_xyz"][slot])
+        if which == "hover":
+            return hover
+        dip = hover.copy()
+        dip[2] -= float(cal.get("hover_z_offset", 0.02))
+        return dip
+
+    # ── Legacy: direction-vector format ──────────────────────────────────────
     ref_slot         = int(cal.get("ref_slot", 0))
     ref_dip          = np.array(cal["ref_dip_xyz"])
     ref_row, ref_col = SLOT_GRID[ref_slot]
