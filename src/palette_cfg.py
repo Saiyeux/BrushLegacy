@@ -13,7 +13,7 @@ from __future__ import annotations
 
 # ── Slot definitions ──────────────────────────────────────────────────────────
 
-SLOT_NAMES    = ["大红", "橘红", "淡黄", "翠绿", "湖蓝", "紫色", "黑色"]
+SLOT_NAMES    = ["大红", "橘红", "淡黄", "翠绿", "湖蓝", "紫色"]
 PALETTE_NAMES = SLOT_NAMES
 
 # Approximate RGB of the actual pigments on the palette.
@@ -25,7 +25,6 @@ SLOT_RGB = [
     (  0, 165,  65),   # 3  翠绿  — emerald green
     ( 40, 148, 205),   # 4  湖蓝  — lake/cerulean blue
     (135,  10, 170),   # 5  紫色  — purple
-    ( 20,  20,  20),   # 6  黑色  — black
 ]
 PALETTE_RGB = SLOT_RGB
 
@@ -37,7 +36,6 @@ SLOT_GRID = [
     (1, 4),   # 3  翠绿
     (2, 0),   # 4  湖蓝
     (2, 4),   # 5  紫色
-    (2, 7),   # 6  黑色
 ]
 
 N_SLOTS   = len(SLOT_NAMES)   # 7

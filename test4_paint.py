@@ -114,8 +114,26 @@ def _cart_go(robot: Franka, target_xyz, speed: float,
 
 # ── Execution ─────────────────────────────────────────────────────────────────
 
+def _scan_start(action_types, slots, start_stroke: int) -> tuple[int, int]:
+    """Return (action_idx, slot) where the start_stroke-th PAINT occurs.
+
+    slot is the colour that should be on the brush at that point.
+    """
+    paint_count  = 0
+    current_slot = -1
+    for i, atype in enumerate(action_types):
+        if int(atype) == ACTION_DIP:
+            current_slot = int(slots[i])
+        if int(atype) == ACTION_PAINT:
+            paint_count += 1
+            if paint_count >= start_stroke:
+                return i, current_slot
+    return len(action_types), current_slot
+
+
 def execute(robot, npz_path: str, palette_cal: dict, canvas: dict,
-            z_press: float = 0.0, dry_run: bool = False) -> None:
+            z_press: float = 0.0, dry_run: bool = False,
+            start_stroke: int = 1) -> None:
     data         = np.load(npz_path, allow_pickle=True)
     n_actions    = int(data["n_actions"])
     action_types = data["action_types"]
@@ -132,11 +150,27 @@ def execute(robot, npz_path: str, palette_cal: dict, canvas: dict,
     tlog(f"序列: {n_actions} 动作  ({n_paint} paint / {n_dip} dip / {n_wash} wash)"
          + ("  [DRY RUN]" if dry_run else ""))
 
-    paint_count   = 0
-    current_slot  = -1
-    at_hover      = False
+    # ── Start-stroke fast-forward ─────────────────────────────────────────────
+    if start_stroke > 1:
+        start_idx, pre_slot = _scan_start(action_types, slots, start_stroke)
+        slot_name = SLOT_NAMES[pre_slot] if 0 <= pre_slot < len(SLOT_NAMES) else f"slot{pre_slot}"
+        tlog(f"↷ 跳到第 {start_stroke} 笔  (从 action {start_idx}, 颜色={slot_name})")
+        if not dry_run and pre_slot >= 0:
+            go_home(robot)
+            goto_paint_hover(robot, palette_cal, pre_slot)
+            dip_paint(robot, palette_cal, pre_slot)
+            go_home(robot)
+        action_range = range(start_idx, n_actions)
+        paint_count  = start_stroke - 1
+        current_slot = pre_slot
+    else:
+        action_range = range(n_actions)
+        paint_count  = 0
+        current_slot = -1
 
-    for i in range(n_actions):
+    at_hover = False
+
+    for i in action_range:
         atype = int(action_types[i])
         slot  = int(slots[i])
 
@@ -197,6 +231,8 @@ def main():
     p.add_argument("--canvas",  default=CANVAS_CAL_PATH)
     p.add_argument("--z_press", type=float, default=0.0,
                    help="Z 偏移 (m)，负值=多按入画布，默认 0")
+    p.add_argument("--start_stroke", type=int, default=1,
+                   help="从第几笔开始执行（默认 1，即从头开始）")
     p.add_argument("--dry_run", action="store_true")
     args = p.parse_args()
 
@@ -215,7 +251,8 @@ def main():
 
     if args.dry_run:
         execute(None, args.npz, palette_cal, canvas,
-                z_press=args.z_press, dry_run=True)
+                z_press=args.z_press, dry_run=True,
+                start_stroke=args.start_stroke)
         return
 
     ip    = robot_ip()
@@ -226,7 +263,8 @@ def main():
 
     input("\n  ⚠  确认颜料已配好、画布已固定、水筒已就位，按 Enter 开始 … ")
     execute(robot, args.npz, palette_cal, canvas,
-            z_press=args.z_press, dry_run=False)
+            z_press=args.z_press, dry_run=False,
+            start_stroke=args.start_stroke)
 
 
 if __name__ == "__main__":
