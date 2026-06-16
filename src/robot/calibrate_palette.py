@@ -73,7 +73,7 @@ from palette_cfg import (
     save_palette_cal,
 )
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 # ── Display helpers ───────────────────────────────────────────────────────────
