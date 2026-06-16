@@ -41,6 +41,7 @@ from palette_actions import (
     goto_paint_hover, dip_paint,
     wash_brush, _speeds,
 )
+from log import tlog, tlog_reset
 
 CANVAS_CAL_PATH = "data/calibration/canvas.npy"
 DEFAULT_NPZ     = "data/trajectories/Tiger_actions.npz"
@@ -126,14 +127,14 @@ def execute(robot, npz_path: str, palette_cal: dict, canvas: dict,
     n_paint = int(np.sum(action_types == ACTION_PAINT))
     n_dip   = int(np.sum(action_types == ACTION_DIP))
     n_wash  = int(np.sum(action_types == ACTION_WASH))
-    print(f"\n  序列: {n_actions} 动作  ({n_paint} paint / {n_dip} dip / {n_wash} wash)")
-    print(f"  J7 pinned = {q7:.4f} rad")
-    if dry_run:
-        print("  [DRY RUN]\n")
+
+    tlog_reset()
+    tlog(f"序列: {n_actions} 动作  ({n_paint} paint / {n_dip} dip / {n_wash} wash)"
+         + ("  [DRY RUN]" if dry_run else ""))
 
     paint_count   = 0
     current_slot  = -1
-    at_hover      = False   # track whether we're already at canvas hover height
+    at_hover      = False
 
     for i in range(n_actions):
         atype = int(action_types[i])
@@ -142,7 +143,7 @@ def execute(robot, npz_path: str, palette_cal: dict, canvas: dict,
         # ── WASH ─────────────────────────────────────────────────────────────
         if atype == ACTION_WASH:
             slot_name = SLOT_NAMES[slot] if 0 <= slot < len(SLOT_NAMES) else f"slot{slot}"
-            print(f"\n  [{i+1}/{n_actions}] WASH  (before {slot_name})")
+            tlog(f"WASH  [{i+1}/{n_actions}]  before {slot_name}")
             if not dry_run:
                 go_home(robot)
                 wash_brush(robot, palette_cal)
@@ -153,7 +154,7 @@ def execute(robot, npz_path: str, palette_cal: dict, canvas: dict,
             slot_name = SLOT_NAMES[slot] if 0 <= slot < len(SLOT_NAMES) else f"slot{slot}"
             is_redip  = (slot == current_slot and current_slot != -1)
             tag       = "RE-DIP" if is_redip else "DIP"
-            print(f"\n  [{i+1}/{n_actions}] {tag}  → {slot_name} (slot {slot})")
+            tlog(f"{tag}  [{i+1}/{n_actions}]  → {slot_name}")
             if not dry_run:
                 if not is_redip:
                     go_home(robot)
@@ -171,26 +172,20 @@ def execute(robot, npz_path: str, palette_cal: dict, canvas: dict,
             p0_hov = p0.copy();  p0_hov[2] += HOVER_LIFT
             p1_hov = p1.copy();  p1_hov[2] += HOVER_LIFT
 
-            if paint_count % 20 == 1:
-                print(f"  [{i+1}/{n_actions}] PAINT {paint_count}/{n_paint}"
-                      f"  slot={current_slot}")
+            tlog(f"PAINT {paint_count}/{n_paint}  [{i+1}/{n_actions}]")
 
             if dry_run:
                 continue
 
-            # Transit to hover above stroke start
             _cart_go(robot, p0_hov, TRANSIT_SPEED, q7)
-            # Descend to canvas
-            _cart_go(robot, p0, PAINT_SPEED, q7)
-            # Draw stroke
-            _cart_go(robot, p1, PAINT_SPEED, q7)
-            # Lift off
-            _cart_go(robot, p1_hov, PAINT_SPEED, q7)
+            _cart_go(robot, p0,     PAINT_SPEED,   q7)
+            _cart_go(robot, p1,     PAINT_SPEED,   q7)
+            _cart_go(robot, p1_hov, PAINT_SPEED,   q7)
             at_hover = True
 
     if not dry_run:
         go_home(robot)
-    print(f"\n  ✓ 完成  {paint_count} 笔\n")
+    tlog(f"✓ 完成  {paint_count} 笔")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────

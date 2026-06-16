@@ -37,6 +37,7 @@ from franka import (
     CartesianVelocities, CartesianVelocitiesFinished,
 )
 from wash_action import cone_sweep, CONE_N_ROT, CONE_AMP_DEG
+from log import tlog
 
 
 # ── Config helpers ────────────────────────────────────────────────────────────
@@ -65,13 +66,14 @@ def _transit_z(cal) -> float:
 
 def go_home(robot: Franka, speed: float | None = None) -> None:
     """Move to canonical home position."""
+    tlog("go_home")
     spd = speed if speed is not None else _speeds()["hover"]
     robot.go_home(speed_factor=spd)
 
 
 def _joint_go(robot: Franka, q, speed: float, label: str = "") -> None:
     if label:
-        print(f"    [{label}]")
+        tlog(f"  {label}")
     mg = MotionGenerator(speed, q if isinstance(q, list) else q.tolist())
     robot.robot_control(joint_positions_handle=mg.operator)
 
@@ -84,7 +86,7 @@ def _cart_go(robot: Franka, target_xyz, speed: float,
     at that angle via null-space projection throughout the move.
     """
     if label:
-        print(f"    [{label}]  → [{target_xyz[0]:.4f}, {target_xyz[1]:.4f}, {target_xyz[2]:.4f}]")
+        tlog(f"  {label}  → [{target_xyz[0]:.4f}, {target_xyz[1]:.4f}, {target_xyz[2]:.4f}]")
     p_goal = np.array(target_xyz, dtype=np.float64)
     v_cur  = np.zeros(3)
     TAU    = 0.12
@@ -118,7 +120,7 @@ def _safe_move(robot: Franka, target_xyz, transit_z: float,
     """3-stage safe Cartesian move: rise → translate → descend, J7 pinned."""
     target = np.array(target_xyz, dtype=float)
     if label:
-        print(f"    [{label}]")
+        tlog(f"  {label}")
 
     st  = robot.read_state()
     T_c = np.array(st.O_T_EE).reshape(4, 4, order='F')
@@ -191,7 +193,8 @@ def dip_paint(robot: Franka, cal, slot: int,
     q7      = _q7(cal)
     xyz_dip = _slot_dip_xyz(cal, slot)
     xyz_hov = _slot_hover_xyz(cal, slot)
-    _cart_go(robot, xyz_dip, speed, f"↓ dip {name}",  q7)
+    _cart_go(robot, xyz_dip, speed, f"↓ dip {name}", q7)
+    tlog(f"  soak {spd['soak_sec']:.2f}s")
     time.sleep(spd["soak_sec"])
     _cart_go(robot, xyz_hov, speed, f"↑ lift {name}", q7)
 
@@ -221,7 +224,7 @@ def cone_wash(robot: Franka, cal,
     if speed is None:
         speed = _speeds()["cone"]
     t_rot = 6.283 / speed
-    print(f"    [cone wash]  {n_rot} rot × {amp_deg}°  speed={speed} rad/s  (~{t_rot*n_rot:.1f}s)")
+    tlog(f"  cone wash  {n_rot}rot × {amp_deg}°  (~{t_rot * n_rot:.1f}s)")
     cone_sweep(robot, np.array(cal["water_dip_q"]),
                n_rot=n_rot, amp_deg=amp_deg, speed=speed)
 
@@ -238,7 +241,7 @@ def drip_wait(secs: float | None = None) -> None:
     """Wait at Hover-2 for water to drip off brush."""
     if secs is None:
         secs = _speeds()["drip_sec"]
-    print(f"    [drip wait]  {secs:.1f}s")
+    tlog(f"  drip wait {secs:.1f}s")
     time.sleep(secs)
 
 
@@ -250,6 +253,7 @@ def wash_brush(robot: Franka, cal,
                wash_speed: float | None = None,
                drip_secs: float | None  = None) -> None:
     """Full wash cycle: water hover → dip → sweep → lift → drip."""
+    tlog("wash_brush")
     goto_water_hover(robot, cal)
     dip_water(robot, cal)
     cone_wash(robot, cal, n_rot=n_rot, amp_deg=amp_deg, speed=wash_speed)
@@ -263,7 +267,7 @@ def change_color(robot: Franka, cal, new_slot: int,
                  wash_speed: float | None = None,
                  drip_secs: float | None  = None) -> None:
     """Wash brush then dip into new_slot."""
-    print(f"\n  == 换色 → {_slot_name(new_slot)} ==")
+    tlog(f"换色 → {_slot_name(new_slot)}")
     wash_brush(robot, cal, n_rot=n_rot, amp_deg=amp_deg,
                wash_speed=wash_speed, drip_secs=drip_secs)
     goto_paint_hover(robot, cal, new_slot)
