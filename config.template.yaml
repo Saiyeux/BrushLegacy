@@ -28,9 +28,9 @@ palette:
 
 # Motion speeds (all MotionGenerator/Cartesian; halved from Cobrush Pro reference)
 speeds:
-  hover: 0.2        # transit moves between positions
-  dip: 0.05         # descend into paint slot or water cup
-  cone: 0.5         # conical sweep angular rate (rad/s, not a Cartesian speed)
+  hover: 0.1        # transit moves between positions
+  dip: 0.05         # descend/ascend into paint slot or water cup
+  cone: 0.8         # conical sweep angular rate (rad/s)
   soak_sec: 0.3     # pause after dipping before sweeping
   drip_sec: 3.0     # wait at hover after wash for water to drip off
 

@@ -13,7 +13,8 @@ from __future__ import annotations
 
 # ── Slot definitions ──────────────────────────────────────────────────────────
 
-SLOT_NAMES = ["Red", "Yellow", "Orange", "Green", "Blue", "Purple", "Black"]
+SLOT_NAMES   = ["Red", "Yellow", "Orange", "Green", "Blue", "Purple", "Black"]
+PALETTE_NAMES = SLOT_NAMES   # alias used by traj_calc / calibrate_palette
 
 SLOT_RGB = [
     (200,   0,   0),   # 0  Red
@@ -24,6 +25,7 @@ SLOT_RGB = [
     (120,   0, 180),   # 5  Purple
     ( 20,  20,  20),   # 6  Black
 ]
+PALETTE_RGB = SLOT_RGB   # alias used by traj_calc / calibrate_palette
 
 # (row, col) position in the 3×8 grid
 SLOT_GRID = [
