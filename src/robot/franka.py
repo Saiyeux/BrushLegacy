@@ -23,8 +23,8 @@ _TORQUE_UPPER = [35.0, 35.0, 32.0, 30.0, 29.0, 27.0, 24.0]
 _FORCE_LOWER  = [30.0, 30.0, 30.0, 25.0, 25.0, 25.0]
 _FORCE_UPPER  = [40.0, 40.0, 40.0, 35.0, 35.0, 35.0]
 
-HOME_JOINTS = [0.0, -math.pi / 4, 0.0, -3 * math.pi / 4, 0.0, math.pi / 2, math.pi / 4]
 J7_PIN      = -0.02   # J7 null-space target — held throughout all Cartesian moves
+HOME_JOINTS = [0.0, -math.pi / 4, 0.0, -3 * math.pi / 4, 0.0, math.pi / 2, J7_PIN]
 
 
 class Franka:

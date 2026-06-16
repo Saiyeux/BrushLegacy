@@ -90,7 +90,7 @@ def main():
 
     # ── Step 1: 笔触生成（图像 → sorted 8D CSV） ─────────────────────────────
     if "gen" not in skip_set:
-        run([SRC / "stroke_gen.py",
+        run([SRC / "gen" / "stroke_gen.py",
              "--image",       image_path,
              "--outdir",      strokes_dir,
              "--max_strokes", args.max_strokes],
@@ -102,7 +102,7 @@ def main():
 
     # ── Step 2: 笔触预览图 ───────────────────────────────────────────────────
     preview_png = output_dir / f"{stem}_preview.png"
-    cmd_preview = [SRC / "stroke_preview.py", "--output", preview_png]
+    cmd_preview = [SRC / "vis" / "stroke_preview.py", "--output", preview_png]
     for layer, path in [(3, l3), (4, l4), (5, l5)]:
         if path.exists():
             cmd_preview += [f"--layer{layer}", path]
@@ -116,7 +116,7 @@ def main():
     ts = _dt.now().strftime("%m%d_%H%M%S")
     latest_npz = traj_dir / f"curves_{stem}_{ts}.npz"
 
-    run([SRC / "traj_calc.py",
+    run([SRC / "gen" / "traj_calc.py",
          "--layer3",       l3,
          "--layer4",       l4,
          "--layer5",       l5,
@@ -127,7 +127,7 @@ def main():
         "traj_calc")
 
     # ── Step 4: 轨迹可视化 ───────────────────────────────────────────────────
-    run([SRC / "traj_vis.py", "--npz", latest_npz], "vis")
+    run([SRC / "vis" / "traj_vis.py", "--npz", latest_npz], "vis")
     overview = latest_npz.parent / (latest_npz.stem + "_overview.png")
     print(f"  → 轨迹总览：{overview}")
     if until_idx == stage_index("vis"):

@@ -13,6 +13,7 @@ import argparse
 import sys
 
 sys.path.insert(0, "src")
+sys.path.insert(0, "src/robot")
 from franka import Franka, HOME_JOINTS
 from config_loader import load_config, robot_ip
 from palette_actions import go_home

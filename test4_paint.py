@@ -32,6 +32,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, "src")
+sys.path.insert(0, "src/robot")
 from franka import Franka, J7_PIN, CartesianVelocities, CartesianVelocitiesFinished
 from config_loader import robot_ip, load_config
 from palette_cfg   import SLOT_NAMES, DEFAULT_CAL_PATH, ACTION_PAINT, ACTION_DIP, ACTION_WASH

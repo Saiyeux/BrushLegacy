@@ -21,6 +21,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, "src")
+sys.path.insert(0, "src/robot")
 from palette_cfg import SLOT_NAMES, SLOT_RGB, N_SLOTS, DEFAULT_CAL_PATH
 from palette_actions import (
     goto_paint_hover, dip_paint,

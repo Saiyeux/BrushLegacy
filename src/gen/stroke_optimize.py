@@ -23,6 +23,9 @@ import math
 import time
 from collections import defaultdict
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent))  # src/
+sys.path.insert(0, str(Path(__file__).parent))         # src/gen/
 from typing import DefaultDict, Dict, List, Optional, Tuple
 
 import numpy as np

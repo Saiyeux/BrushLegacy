@@ -14,6 +14,7 @@ import sys
 import numpy as np
 
 sys.path.insert(0, "src")
+sys.path.insert(0, "src/robot")
 from wash_action import cone_sweep, CONE_SPEED, DIP_SPEED, CONE_AMP_DEG, CONE_N_ROT
 from config_loader import robot_ip
 

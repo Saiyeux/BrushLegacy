@@ -29,6 +29,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, "src")
+sys.path.insert(0, "src/robot")
 from franka import Franka
 from config_loader import robot_ip
 

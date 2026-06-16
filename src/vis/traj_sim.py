@@ -17,6 +17,9 @@ Usage:
 import argparse
 import math
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent))  # src/
+sys.path.insert(0, str(Path(__file__).parent))         # src/vis/
 
 import cv2
 import numpy as np

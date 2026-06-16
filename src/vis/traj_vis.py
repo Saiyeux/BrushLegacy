@@ -20,6 +20,9 @@ Usage:
 
 import argparse
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent))  # src/
+sys.path.insert(0, str(Path(__file__).parent))         # src/vis/
 
 import numpy as np
 import matplotlib

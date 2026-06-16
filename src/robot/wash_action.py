@@ -45,6 +45,9 @@ import argparse
 import math
 import time
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent))  # src/
+sys.path.insert(0, str(Path(__file__).parent))         # src/robot/
 
 import numpy as np
 
@@ -107,7 +110,6 @@ def do_wash(api, cal: dict,
 
     try:
         import sys
-        sys.path.insert(0, "src") if "src" not in "".join(sys.path) else None
         from config_loader import load_config
         s = load_config().get("speeds", {})
         hover_spd = float(s.get("hover", 0.2))
