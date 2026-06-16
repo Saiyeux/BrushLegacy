@@ -132,6 +132,38 @@ def _safe_move(robot: Franka, target_xyz, transit_z: float,
         _cart_go(robot, target, speed, "↓ descend")
 
 
+# ── Slot position helpers ─────────────────────────────────────────────────────
+
+def _slot_hover_xyz(cal: dict, slot: int) -> np.ndarray:
+    """XYZ of hover-1 above palette slot, derived from ref + pitch offset."""
+    from palette_cfg import SLOT_GRID
+    ref_slot        = int(cal.get("ref_slot", 0))
+    ref_xyz         = np.array(cal["ref_hover_xyz"])
+    ref_row, ref_col = SLOT_GRID[ref_slot]
+    row, col        = SLOT_GRID[slot]
+    pitch_x, pitch_y = cal["slot_pitch_xy"]
+    return np.array([
+        ref_xyz[0] + (col - ref_col) * pitch_x,
+        ref_xyz[1] + (row - ref_row) * pitch_y,
+        ref_xyz[2],
+    ])
+
+
+def _slot_dip_xyz(cal: dict, slot: int) -> np.ndarray:
+    """XYZ of dip position inside palette slot, derived from ref + pitch offset."""
+    from palette_cfg import SLOT_GRID
+    ref_slot        = int(cal.get("ref_slot", 0))
+    ref_xyz         = np.array(cal["ref_dip_xyz"])
+    ref_row, ref_col = SLOT_GRID[ref_slot]
+    row, col        = SLOT_GRID[slot]
+    pitch_x, pitch_y = cal["slot_pitch_xy"]
+    return np.array([
+        ref_xyz[0] + (col - ref_col) * pitch_x,
+        ref_xyz[1] + (row - ref_row) * pitch_y,
+        ref_xyz[2],
+    ])
+
+
 # ── Atomic actions ────────────────────────────────────────────────────────────
 
 def goto_paint_hover(robot: Franka, cal, slot: int,
@@ -139,23 +171,53 @@ def goto_paint_hover(robot: Franka, cal, slot: int,
     """Move to Hover-1 above paint slot via transit height (safe 3-stage)."""
     if speed is None:
         speed = _speeds()["hover"]
-    T_hov = np.array(cal["slot_hover_T"][slot])
-    _safe_move(robot, T_hov[:3, 3], _transit_z(cal), speed,
+    xyz = _slot_hover_xyz(cal, slot)
+    _safe_move(robot, xyz, _transit_z(cal), speed,
                label=f"goto hover-1 {_slot_name(slot)}")
 
 
 def dip_paint(robot: Franka, cal, slot: int,
               speed: float | None = None) -> None:
-    """From Hover-1: descend into paint, soak, return to Hover-1. Pure Z motion."""
+    """From Hover-1: descend into paint, soak, return to Hover-1.
+
+    Uses IK with J7 pinned to calibrated value (same as Cobrush Pro).
+    EE orientation is kept identical to ref hover calibration across all slots.
+    """
     spd  = _speeds()
     if speed is None:
         speed = spd["dip"]
-    name  = _slot_name(slot)
-    T_dip = np.array(cal["slot_dip_T"][slot])
-    T_hov = np.array(cal["slot_hover_T"][slot])
-    _cart_go(robot, T_dip[:3, 3], speed, f"↓ dip {name}")
+    name = _slot_name(slot)
+
+    q_ref_hover = cal.get("ref_hover_q")
+    if q_ref_hover is not None:
+        from ik import franka_fk, franka_ik
+        q_ref = np.array(q_ref_hover)
+        q7    = float(q_ref[6])
+        T_ref = franka_fk(q_ref)   # EE pose at ref hover (orientation to preserve)
+
+        xyz_hov = _slot_hover_xyz(cal, slot)
+        xyz_dip = _slot_dip_xyz(cal, slot)
+
+        T_hov = T_ref.copy();  T_hov[:3, 3] = xyz_hov
+        T_dip = T_ref.copy();  T_dip[:3, 3] = xyz_dip
+
+        q_hov, ok_h = franka_ik(T_hov, q_ref,  q7_fixed=q7)
+        q_dip, ok_d = franka_ik(T_dip, q_hov,  q7_fixed=q7)
+
+        if ok_h and ok_d:
+            _joint_go(robot, q_hov.tolist(), speed, f"hover snap J7 {name}")
+            _joint_go(robot, q_dip.tolist(), speed, f"↓ dip {name}")
+            time.sleep(spd["soak_sec"])
+            _joint_go(robot, q_hov.tolist(), speed, f"↑ lift {name}")
+            return
+        print(f"  [WARN] IK did not converge for slot {slot}, falling back to Cartesian")
+
+    # Fallback: Cartesian (no J7 guarantee)
+    xyz_dip = _slot_dip_xyz(cal, slot)
+    xyz_hov = _slot_hover_xyz(cal, slot)
+    _cart_go(robot, xyz_dip, speed, f"↓ dip {name}")
     time.sleep(spd["soak_sec"])
-    _cart_go(robot, T_hov[:3, 3], speed, f"↑ lift {name}")
+    _cart_go(robot, xyz_hov, speed, f"↑ lift {name}")
 
 
 def goto_water_hover(robot: Franka, cal,

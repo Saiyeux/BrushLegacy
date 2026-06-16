@@ -44,8 +44,8 @@ from palette_actions import (
 CANVAS_CAL_PATH = "data/calibration/canvas.npy"
 DEFAULT_NPZ     = "data/trajectories/Tiger_actions.npz"
 
-PAINT_SPEED   = 0.06   # m/s during stroke contact (slow, controlled)
-TRANSIT_SPEED = 0.15   # m/s hover transit between strokes
+PAINT_SPEED   = 0.048  # m/s during stroke contact (−20% from 0.06)
+TRANSIT_SPEED = 0.12   # m/s hover transit between strokes (−20% from 0.15)
 HOVER_LIFT    = 0.015  # m above canvas z for hover between strokes
 TAU_SMOOTH    = 0.10   # velocity smoothing time constant (s)
 
@@ -140,9 +140,12 @@ def execute(robot, npz_path: str, palette_cal: dict, canvas: dict,
         # ── DIP ──────────────────────────────────────────────────────────────
         elif atype == ACTION_DIP:
             slot_name = SLOT_NAMES[slot] if 0 <= slot < len(SLOT_NAMES) else f"slot{slot}"
-            print(f"\n  [{i+1}/{n_actions}] DIP  → {slot_name} (slot {slot})")
+            is_redip  = (slot == current_slot and current_slot != -1)
+            tag       = "RE-DIP" if is_redip else "DIP"
+            print(f"\n  [{i+1}/{n_actions}] {tag}  → {slot_name} (slot {slot})")
             if not dry_run:
-                go_home(robot)
+                if not is_redip:
+                    go_home(robot)
                 goto_paint_hover(robot, palette_cal, slot)
                 dip_paint(robot, palette_cal, slot)
                 go_home(robot)

@@ -62,8 +62,10 @@ def main():
     p.add_argument("--skip",        nargs="*", default=[],
                    choices=["gen"],
                    help="跳过哪些阶段（文件必须已存在）")
-    p.add_argument("--max_strokes", type=int, default=300,
+    p.add_argument("--max_strokes",  type=int, default=300,
                    help="笔触总数上限 (default: 300)")
+    p.add_argument("--dip_interval", type=int, default=10,
+                   help="同色每隔多少笔重新蘸墨 (default: 10; 0=禁用)")
     args = p.parse_args()
 
     image_path  = Path(args.image)
@@ -115,12 +117,13 @@ def main():
     latest_npz = traj_dir / f"curves_{stem}_{ts}.npz"
 
     run([SRC / "traj_calc.py",
-         "--layer3",      l3,
-         "--layer4",      l4,
-         "--layer5",      l5,
-         "--output",      latest_npz,
-         "--canvas",      512,
-         "--max_strokes", args.max_strokes],
+         "--layer3",       l3,
+         "--layer4",       l4,
+         "--layer5",       l5,
+         "--output",       latest_npz,
+         "--canvas",       512,
+         "--max_strokes",  args.max_strokes,
+         "--dip_interval", args.dip_interval],
         "traj_calc")
 
     # ── Step 4: 轨迹可视化 ───────────────────────────────────────────────────

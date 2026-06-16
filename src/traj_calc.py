@@ -50,6 +50,7 @@ from palette_cfg import (
 )
 
 STROKE_CANVAS = 512   # stroke coordinates live in [0, STROKE_CANVAS]
+DIP_INTERVAL  = 10   # re-dip after this many paint strokes with the same colour
 
 
 # ── CSV → raw stroke list ─────────────────────────────────────────────────────
@@ -104,15 +105,14 @@ def _assign_slots(colors: list) -> list[int]:
 
 # ── Action sequence builder ───────────────────────────────────────────────────
 
-def _build_action_sequence(curves, colors, widths, slots) -> tuple:
-    """Insert dip and wash actions around paint strokes.
+def _build_action_sequence(curves, colors, widths, slots,
+                           dip_interval: int = DIP_INTERVAL) -> tuple:
+    """Insert dip, re-dip, and wash actions around paint strokes.
 
     Rules:
       - Always dip before the very first stroke.
-      - When the palette slot changes:
-          1. Wash the brush (ACTION_WASH).
-          2. Dip in the new slot (ACTION_DIP).
-      - No wash needed if painting with the same colour as before.
+      - When the palette slot changes: wash → dip new slot.
+      - Every dip_interval strokes with the same colour: re-dip (no wash).
 
     Returns (act_types, act_curves, act_colors, act_widths, act_slots) as lists.
     """
@@ -130,18 +130,23 @@ def _build_action_sequence(curves, colors, widths, slots) -> tuple:
         act_widths.append(float(width))
         act_slots.append(int(slot))
 
-    current_slot = None
+    current_slot    = None
+    paint_since_dip = 0
 
     for curve, color, width, slot in zip(curves, colors, widths, slots):
         if slot != current_slot:
             if current_slot is not None:
-                # Brush needs washing before switching colour
                 _push(ACTION_WASH)
-            # Dip in the new palette slot
             _push(ACTION_DIP, color=PALETTE_RGB[slot], slot=slot)
-            current_slot = slot
+            current_slot    = slot
+            paint_since_dip = 0
+        elif dip_interval > 0 and paint_since_dip >= dip_interval:
+            # Re-dip in same colour (no wash)
+            _push(ACTION_DIP, color=PALETTE_RGB[slot], slot=slot)
+            paint_since_dip = 0
 
         _push(ACTION_PAINT, curve=curve, color=color, width=width, slot=slot)
+        paint_since_dip += 1
 
     return act_types, act_curves, act_colors, act_widths, act_slots
 
@@ -149,7 +154,8 @@ def _build_action_sequence(curves, colors, widths, slots) -> tuple:
 # ── NPZ builder ───────────────────────────────────────────────────────────────
 
 def build_npz(layer_csvs: dict, canvas_px: int, output_path: str,
-              max_strokes: int = 300) -> str | None:
+              max_strokes: int = 300,
+              dip_interval: int = DIP_INTERVAL) -> str | None:
     """Merge all layers into one brushlegacy_v2 action-sequence NPZ.
 
     layer_csvs  : {3: path, 4: path, 5: path}
@@ -220,7 +226,8 @@ def build_npz(layer_csvs: dict, canvas_px: int, output_path: str,
 
     # ── Build action sequence ────────────────────────────────────────────────
     types, curves, colors, widths, slots = _build_action_sequence(
-        all_curves, all_colors, all_widths, all_slots
+        all_curves, all_colors, all_widths, all_slots,
+        dip_interval=dip_interval,
     )
 
     n_paint = sum(1 for t in types if t == ACTION_PAINT)
@@ -258,9 +265,11 @@ def main():
     p.add_argument("--layer4", default=None)
     p.add_argument("--layer5", default=None)
     p.add_argument("--output",      required=True)
-    p.add_argument("--canvas",      type=int, default=512)
-    p.add_argument("--max_strokes", type=int, default=300,
+    p.add_argument("--canvas",       type=int, default=512)
+    p.add_argument("--max_strokes",  type=int, default=300,
                    help="Total stroke cap across all layers (0 = no limit)")
+    p.add_argument("--dip_interval", type=int, default=DIP_INTERVAL,
+                   help=f"Re-dip every N paint strokes, same colour (default {DIP_INTERVAL}; 0=disable)")
     args = p.parse_args()
 
     layer_csvs = {}
@@ -271,7 +280,8 @@ def main():
     if not layer_csvs:
         p.error("Provide at least one of --layer3 / --layer4 / --layer5")
 
-    build_npz(layer_csvs, args.canvas, args.output, args.max_strokes)
+    build_npz(layer_csvs, args.canvas, args.output, args.max_strokes,
+              dip_interval=args.dip_interval)
 
 
 if __name__ == "__main__":

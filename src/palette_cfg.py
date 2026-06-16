@@ -13,34 +13,32 @@ from __future__ import annotations
 
 # ── Slot definitions ──────────────────────────────────────────────────────────
 
-SLOT_NAMES   = ["Red", "Yellow", "Orange", "Green", "Blue", "Purple", "Black"]
+SLOT_NAMES   = ["Red", "Orange", "Yellow", "Green", "Blue", "Purple"]
 PALETTE_NAMES = SLOT_NAMES   # alias used by traj_calc / calibrate_palette
 
 SLOT_RGB = [
     (200,   0,   0),   # 0  Red
-    (220, 180,   0),   # 1  Yellow
-    (220, 100,   0),   # 2  Orange
+    (220, 100,   0),   # 1  Orange
+    (220, 180,   0),   # 2  Yellow
     (  0, 160,   0),   # 3  Green
     (  0,  80, 200),   # 4  Blue
     (120,   0, 180),   # 5  Purple
-    ( 20,  20,  20),   # 6  Black
 ]
 PALETTE_RGB = SLOT_RGB   # alias used by traj_calc / calibrate_palette
 
-# (row, col) position in the 3×8 grid
+# (row, col) position in the 3×8 grid  — col 0 and col 4, 3 rows
 SLOT_GRID = [
     (0, 0),   # 0  Red
-    (0, 4),   # 1  Yellow
-    (1, 0),   # 2  Orange
+    (0, 4),   # 1  Orange
+    (1, 0),   # 2  Yellow
     (1, 4),   # 3  Green
     (2, 0),   # 4  Blue
     (2, 4),   # 5  Purple
-    (2, 7),   # 6  Black
 ]
 
-N_SLOTS   = len(SLOT_NAMES)   # 7
+N_SLOTS   = len(SLOT_NAMES)   # 6
 REF_SLOT  = 0   # Red — primary calibration reference
-REF_SLOT2 = 1   # Yellow — secondary reference (determines column direction)
+REF_SLOT2 = 1   # Orange — secondary reference (same row, col 4)
 
 DEFAULT_CAL_PATH = "data/calibration/palette.npy"
 
