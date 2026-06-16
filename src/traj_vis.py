@@ -615,6 +615,7 @@ def save_accumulation_frames(npz_info: dict, out_dir: str) -> None:
         curves = npz_info["curves"]
         colors = npz_info["colors"]
         widths = npz_info["widths"]
+        slots  = npz_info["slots"]
         W      = npz_info["canvas_width"]
         H      = npz_info["canvas_height"]
         n_all  = npz_info["n"]
@@ -639,15 +640,13 @@ def save_accumulation_frames(npz_info: dict, out_dir: str) -> None:
 
         for i in range(n_all):
             atype = int(types[i])
-            slot  = int(slots[i]) if "slots" in npz_info else -1
+            slot  = int(slots[i])
 
             if atype == ACTION_DIP:
                 current_slot = slot
 
             elif atype == ACTION_PAINT:
-                slots_arr = npz_info["slots"]
-                slot      = int(slots_arr[i])
-                r, g, b   = int(colors[i, 0]), int(colors[i, 1]), int(colors[i, 2])
+                r, g, b = int(colors[i, 0]), int(colors[i, 1]), int(colors[i, 2])
                 _draw_stroke(canvas, curves[i], (r, g, b), float(widths[i]))
                 frame   = canvas.copy()
                 changed = (current_slot != last_paint_slot and last_paint_slot != -1)
