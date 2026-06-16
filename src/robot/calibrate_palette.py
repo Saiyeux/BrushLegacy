@@ -145,13 +145,16 @@ def calibrate(ip: str | None, manual: bool, out_path: Path) -> None:
 
     # ── Steps 2 … N+1: Per-slot hover positions ───────────────────────────────
     slot_hover_xyz: list[list[float]] = []
+    slot_hover_q:   list = []
     for i in range(N_SLOTS):
         r, g, b = PALETTE_RGB[i]
         name    = PALETTE_NAMES[i]
         step    = i + 2
         print(f"  ─── Step {step} / {total}: HOVER above {_swatch(r, g, b)} {name} (slot {i}) ───")
-        xyz, _ = record(f"Guide to HOVER above {name}.")
+        print("      (flange vertical, J7 at target angle before recording)")
+        xyz, q = record(f"Guide to HOVER above {name}.")
         slot_hover_xyz.append(xyz.tolist())
+        slot_hover_q.append(q)
         print()
 
     # ── Steps N+2 & N+3: Water cup ───────────────────────────────────────────
@@ -166,6 +169,7 @@ def calibrate(ip: str | None, manual: bool, out_path: Path) -> None:
     cal = {
         "hover_z_offset":  hover_z_offset,
         "slot_hover_xyz":  slot_hover_xyz,
+        "slot_hover_q":    slot_hover_q,   # joint angles — used for orientation-safe approach
         "water_hover_xyz": water_hover_xyz.tolist(),
         "water_cup_xyz":   water_dip_xyz.tolist(),
         "water_hover_q":   water_hover_q,
@@ -189,13 +193,16 @@ def _print_summary(cal: dict) -> None:
     print(f"  {'Slot':>4}  Swatch  {'Name':<10}  "
           f"{'Hover XYZ (m)':<40}  Dip Z (m)")
     print(f"  {'─'*64}")
+    hover_q_list = cal.get("slot_hover_q", [])
     for i in range(N_SLOTS):
         r, g, b = PALETTE_RGB[i]
         name    = PALETTE_NAMES[i]
         hover   = _slot_xyz(cal, i, "hover")
         dip_z   = hover[2] - hover_off
+        q_str   = ("q=[" + ",".join(f"{v:.3f}" for v in hover_q_list[i]) + "]"
+                   if i < len(hover_q_list) and hover_q_list[i] else "q=—")
         print(f"  {i:4d}   {_swatch(r, g, b)}  {name:<10}  "
-              f"{_fmt_xyz(hover):<40}  {dip_z:.4f}")
+              f"{_fmt_xyz(hover)}  dip_z={dip_z:.4f}  {q_str}")
 
     water_h = cal["water_hover_xyz"]
     water   = cal["water_cup_xyz"]

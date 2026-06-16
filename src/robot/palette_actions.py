@@ -154,13 +154,23 @@ def _slot_dip_xyz(cal: dict, slot: int) -> np.ndarray:
 
 def goto_paint_hover(robot: Franka, cal, slot: int,
                      speed: float | None = None) -> None:
-    """Move to Hover-1 above paint slot. J7 pinned via null-space throughout."""
+    """Joint-space move to hover above paint slot.
+
+    Uses stored joint angles (slot_hover_q) so the flange arrives vertical
+    and J7 is already at the correct angle before the Cartesian dip descent.
+    Falls back to Cartesian _safe_move if joint angles were not recorded.
+    """
     if speed is None:
         speed = _speeds()["hover"]
-    xyz = _slot_hover_xyz(cal, slot)
-    _safe_move(robot, xyz, _transit_z(cal), speed,
-               label=f"goto hover-1 {_slot_name(slot)}",
-               q7_target=_q7(cal))
+    q_list = cal.get("slot_hover_q") or []
+    q      = q_list[slot] if slot < len(q_list) else None
+    if q is not None:
+        _joint_go(robot, q, speed, f"goto hover {_slot_name(slot)}")
+    else:
+        xyz = _slot_hover_xyz(cal, slot)
+        _safe_move(robot, xyz, _transit_z(cal), speed,
+                   label=f"goto hover-1 {_slot_name(slot)}",
+                   q7_target=_q7(cal))
 
 
 def dip_paint(robot: Franka, cal, slot: int,
