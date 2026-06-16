@@ -47,7 +47,7 @@ REF_SLOT2 = 1   # 橘红 — secondary reference (same row, col 4)
 DEFAULT_CAL_PATH = "data/calibration/palette.npy"
 
 # ── Grid pitch defaults (metres per column/row unit in the 3×8 grid) ─────────
-SLOT_PITCH_X = 0.028   # 28 mm per column unit
+SLOT_PITCH_X = -0.028  # 28 mm per column unit — negative: col↑ → X↓ (base is to the right)
 SLOT_PITCH_Y = 0.034   # 34 mm per row unit
 
 # ── Action type constants ─────────────────────────────────────────────────────
