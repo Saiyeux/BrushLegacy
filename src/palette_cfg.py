@@ -98,17 +98,32 @@ def nearest_slot(r: int, g: int, b: int) -> int:
 
 
 def slot_xyz(cal: dict, slot: int, which: str = "dip") -> np.ndarray:
-    """Compute robot XYZ for a slot from calibration ref + pitch offset."""
+    """Compute robot XYZ for a slot.
+
+    Uses col_vec_xy / row_vec_xy (3-point calibration) when available;
+    falls back to slot_pitch_xy scalars for old calibration files.
+    Hover XYZ is always derived from dip XYZ + hover_z_offset so the
+    direction vectors stay consistent regardless of which='hover'.
+    """
     ref_slot         = int(cal.get("ref_slot", 0))
-    ref_xyz          = np.array(cal[f"ref_{which}_xyz"])
+    ref_dip          = np.array(cal["ref_dip_xyz"])
     ref_row, ref_col = SLOT_GRID[ref_slot]
     row, col         = SLOT_GRID[slot]
-    pitch_x, pitch_y = cal.get("slot_pitch_xy", [SLOT_PITCH_X, SLOT_PITCH_Y])
-    return np.array([
-        ref_xyz[0] + (col - ref_col) * pitch_x,
-        ref_xyz[1] + (row - ref_row) * pitch_y,
-        ref_xyz[2],
-    ])
+    dcol = col - ref_col
+    drow = row - ref_row
+
+    if "col_vec_xy" in cal and "row_vec_xy" in cal:
+        col_vec = np.array(cal["col_vec_xy"])
+        row_vec = np.array(cal["row_vec_xy"])
+        ox, oy  = dcol * col_vec + drow * row_vec
+    else:
+        pitch_x, pitch_y = cal.get("slot_pitch_xy", [SLOT_PITCH_X, SLOT_PITCH_Y])
+        ox, oy = dcol * pitch_x, drow * pitch_y
+
+    z = ref_dip[2]
+    if which == "hover":
+        z += float(cal.get("hover_z_offset", 0.02))
+    return np.array([ref_dip[0] + ox, ref_dip[1] + oy, z])
 
 
 def all_slot_positions(cal: dict, which: str = "dip") -> list[np.ndarray]:

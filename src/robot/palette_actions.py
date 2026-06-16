@@ -141,33 +141,13 @@ def _safe_move(robot: Franka, target_xyz, transit_z: float,
 # ── Slot position helpers ─────────────────────────────────────────────────────
 
 def _slot_hover_xyz(cal: dict, slot: int) -> np.ndarray:
-    """XYZ of hover-1 above palette slot, derived from ref + pitch offset."""
-    from palette_cfg import SLOT_GRID
-    ref_slot        = int(cal.get("ref_slot", 0))
-    ref_xyz         = np.array(cal["ref_hover_xyz"])
-    ref_row, ref_col = SLOT_GRID[ref_slot]
-    row, col        = SLOT_GRID[slot]
-    pitch_x, pitch_y = cal["slot_pitch_xy"]
-    return np.array([
-        ref_xyz[0] + (col - ref_col) * pitch_x,
-        ref_xyz[1] + (row - ref_row) * pitch_y,
-        ref_xyz[2],
-    ])
+    from palette_cfg import slot_xyz
+    return slot_xyz(cal, slot, "hover")
 
 
 def _slot_dip_xyz(cal: dict, slot: int) -> np.ndarray:
-    """XYZ of dip position inside palette slot, derived from ref + pitch offset."""
-    from palette_cfg import SLOT_GRID
-    ref_slot        = int(cal.get("ref_slot", 0))
-    ref_xyz         = np.array(cal["ref_dip_xyz"])
-    ref_row, ref_col = SLOT_GRID[ref_slot]
-    row, col        = SLOT_GRID[slot]
-    pitch_x, pitch_y = cal["slot_pitch_xy"]
-    return np.array([
-        ref_xyz[0] + (col - ref_col) * pitch_x,
-        ref_xyz[1] + (row - ref_row) * pitch_y,
-        ref_xyz[2],
-    ])
+    from palette_cfg import slot_xyz
+    return slot_xyz(cal, slot, "dip")
 
 
 # ── Atomic actions ────────────────────────────────────────────────────────────
