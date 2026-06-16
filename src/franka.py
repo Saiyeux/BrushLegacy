@@ -24,6 +24,7 @@ _FORCE_LOWER  = [30.0, 30.0, 30.0, 25.0, 25.0, 25.0]
 _FORCE_UPPER  = [40.0, 40.0, 40.0, 35.0, 35.0, 35.0]
 
 HOME_JOINTS = [0.0, -math.pi / 4, 0.0, -3 * math.pi / 4, 0.0, math.pi / 2, math.pi / 4]
+J7_PIN      = -0.02   # J7 null-space target — held throughout all Cartesian moves
 
 
 class Franka:

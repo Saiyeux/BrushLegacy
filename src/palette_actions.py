@@ -32,7 +32,7 @@ import time
 import numpy as np
 
 from franka import (
-    Franka, HOME_JOINTS,
+    Franka, HOME_JOINTS, J7_PIN,
     MotionGenerator,
     CartesianVelocities, CartesianVelocitiesFinished,
 )
@@ -76,42 +76,46 @@ def _joint_go(robot: Franka, q, speed: float, label: str = "") -> None:
     robot.robot_control(joint_positions_handle=mg.operator)
 
 
-def _cart_go(robot: Franka, target_xyz, speed: float, label: str = "") -> None:
+def _cart_go(robot: Franka, target_xyz, speed: float,
+             label: str = "", q7_target: float | None = None) -> None:
     """Cartesian move with exponential velocity smoothing.
 
-    Low-pass filter on velocity commands avoids cartesian_motion_generator
-    joint_acceleration_discontinuity reflex on Franka.
+    If q7_target is set, uses robot.api.robot_control_j7_pinned so J7 is held
+    at that angle via null-space projection throughout the move.
     """
     if label:
         print(f"    [{label}]  → [{target_xyz[0]:.4f}, {target_xyz[1]:.4f}, {target_xyz[2]:.4f}]")
     p_goal = np.array(target_xyz, dtype=np.float64)
     v_cur  = np.zeros(3)
-    TAU    = 0.12   # velocity smoothing time constant (s)
+    TAU    = 0.12
 
     def cb(rs, period):
         dt  = max(period.toSec(), 0.0005)
         T_c = np.array(rs.O_T_EE).reshape(4, 4, order='F')
         err = p_goal - T_c[:3, 3]
         d   = np.linalg.norm(err)
-
         if d < 0.001 and np.linalg.norm(v_cur) < 0.005:
             return CartesianVelocitiesFinished(CartesianVelocities([0.0] * 6))
-
-        v_des      = (err / d) * min(speed, d * 4.0) if d > 0.001 else np.zeros(3)
-        alpha      = 1.0 - math.exp(-dt / TAU)
-        v_cur[:]  += alpha * (v_des - v_cur)
+        v_des     = (err / d) * min(speed, d * 4.0) if d > 0.001 else np.zeros(3)
+        alpha     = 1.0 - math.exp(-dt / TAU)
+        v_cur[:] += alpha * (v_des - v_cur)
         return CartesianVelocities(v_cur.tolist() + [0.0, 0.0, 0.0])
 
-    robot.robot_control(cartesian_velocities_handle=cb)
+    if q7_target is not None:
+        robot.api.robot_control_j7_pinned(cb, q7_target)
+    else:
+        robot.robot_control(cartesian_velocities_handle=cb)
+
+
+def _q7(_cal=None) -> float:
+    """J7 null-space pin target (fixed robot constant)."""
+    return J7_PIN
 
 
 def _safe_move(robot: Franka, target_xyz, transit_z: float,
-               speed: float, label: str = "") -> None:
-    """3-stage safe Cartesian move: rise → translate → descend.
-
-    All horizontal travel at transit_z (Hover-2 height) to avoid collisions
-    with palette walls and water cup edges.
-    """
+               speed: float, label: str = "",
+               q7_target: float | None = None) -> None:
+    """3-stage safe Cartesian move: rise → translate → descend, J7 pinned."""
     target = np.array(target_xyz, dtype=float)
     if label:
         print(f"    [{label}]")
@@ -122,14 +126,14 @@ def _safe_move(robot: Franka, target_xyz, transit_z: float,
     tz  = max(cur[2], transit_z)
 
     if cur[2] < tz - 0.002:
-        _cart_go(robot, np.array([cur[0], cur[1], tz]), speed, "↑ rise")
+        _cart_go(robot, np.array([cur[0], cur[1], tz]), speed, "↑ rise", q7_target)
 
     mid = np.array([target[0], target[1], tz])
     if np.linalg.norm(mid[:2] - cur[:2]) > 0.002:
-        _cart_go(robot, mid, speed, "→ translate")
+        _cart_go(robot, mid, speed, "→ translate", q7_target)
 
     if tz - target[2] > 0.002:
-        _cart_go(robot, target, speed, "↓ descend")
+        _cart_go(robot, target, speed, "↓ descend", q7_target)
 
 
 # ── Slot position helpers ─────────────────────────────────────────────────────
@@ -168,65 +172,38 @@ def _slot_dip_xyz(cal: dict, slot: int) -> np.ndarray:
 
 def goto_paint_hover(robot: Franka, cal, slot: int,
                      speed: float | None = None) -> None:
-    """Move to Hover-1 above paint slot via transit height (safe 3-stage)."""
+    """Move to Hover-1 above paint slot. J7 pinned via null-space throughout."""
     if speed is None:
         speed = _speeds()["hover"]
     xyz = _slot_hover_xyz(cal, slot)
     _safe_move(robot, xyz, _transit_z(cal), speed,
-               label=f"goto hover-1 {_slot_name(slot)}")
+               label=f"goto hover-1 {_slot_name(slot)}",
+               q7_target=_q7(cal))
 
 
 def dip_paint(robot: Franka, cal, slot: int,
               speed: float | None = None) -> None:
-    """From Hover-1: descend into paint, soak, return to Hover-1.
-
-    Uses IK with J7 pinned to calibrated value (same as Cobrush Pro).
-    EE orientation is kept identical to ref hover calibration across all slots.
-    """
+    """From Hover-1: descend into paint, soak, return to Hover-1. J7 pinned."""
     spd  = _speeds()
     if speed is None:
         speed = spd["dip"]
-    name = _slot_name(slot)
-
-    q_ref_hover = cal.get("ref_hover_q")
-    if q_ref_hover is not None:
-        from ik import franka_fk, franka_ik
-        q_ref = np.array(q_ref_hover)
-        q7    = float(q_ref[6])
-        T_ref = franka_fk(q_ref)   # EE pose at ref hover (orientation to preserve)
-
-        xyz_hov = _slot_hover_xyz(cal, slot)
-        xyz_dip = _slot_dip_xyz(cal, slot)
-
-        T_hov = T_ref.copy();  T_hov[:3, 3] = xyz_hov
-        T_dip = T_ref.copy();  T_dip[:3, 3] = xyz_dip
-
-        q_hov, ok_h = franka_ik(T_hov, q_ref,  q7_fixed=q7)
-        q_dip, ok_d = franka_ik(T_dip, q_hov,  q7_fixed=q7)
-
-        if ok_h and ok_d:
-            _joint_go(robot, q_hov.tolist(), speed, f"hover snap J7 {name}")
-            _joint_go(robot, q_dip.tolist(), speed, f"↓ dip {name}")
-            time.sleep(spd["soak_sec"])
-            _joint_go(robot, q_hov.tolist(), speed, f"↑ lift {name}")
-            return
-        print(f"  [WARN] IK did not converge for slot {slot}, falling back to Cartesian")
-
-    # Fallback: Cartesian (no J7 guarantee)
+    name    = _slot_name(slot)
+    q7      = _q7(cal)
     xyz_dip = _slot_dip_xyz(cal, slot)
     xyz_hov = _slot_hover_xyz(cal, slot)
-    _cart_go(robot, xyz_dip, speed, f"↓ dip {name}")
+    _cart_go(robot, xyz_dip, speed, f"↓ dip {name}",  q7)
     time.sleep(spd["soak_sec"])
-    _cart_go(robot, xyz_hov, speed, f"↑ lift {name}")
+    _cart_go(robot, xyz_hov, speed, f"↑ lift {name}", q7)
 
 
 def goto_water_hover(robot: Franka, cal,
                      speed: float | None = None) -> None:
-    """Move to Hover-2 (transit height above water cup) via safe 3-stage move."""
+    """Move to Hover-2 (transit height above water cup). J7 pinned."""
     if speed is None:
         speed = _speeds()["hover"]
     water_xyz = np.array(cal["water_hover_xyz"])
-    _safe_move(robot, water_xyz, _transit_z(cal), speed, label="goto water hover-2")
+    _safe_move(robot, water_xyz, _transit_z(cal), speed,
+               label="goto water hover-2", q7_target=_q7(cal))
 
 
 def dip_water(robot: Franka, cal, speed: float | None = None) -> None:

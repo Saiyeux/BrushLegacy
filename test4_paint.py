@@ -32,7 +32,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, "src")
-from franka import Franka, CartesianVelocities, CartesianVelocitiesFinished
+from franka import Franka, J7_PIN, CartesianVelocities, CartesianVelocitiesFinished
 from config_loader import robot_ip, load_config
 from palette_cfg   import SLOT_NAMES, DEFAULT_CAL_PATH, ACTION_PAINT, ACTION_DIP, ACTION_WASH
 from palette_actions import (
@@ -83,8 +83,12 @@ def stroke_xyz(curve: np.ndarray, canvas: dict,
 
 # ── Smooth Cartesian controller ───────────────────────────────────────────────
 
-def _cart_go(robot: Franka, target_xyz, speed: float) -> None:
-    """Smooth P-controller Cartesian move (exponential velocity filter)."""
+def _cart_go(robot: Franka, target_xyz, speed: float,
+             q7_target: float | None = None) -> None:
+    """Smooth P-controller Cartesian move (exponential velocity filter).
+
+    If q7_target is set, uses robot_control_j7_pinned to hold J7 via null-space.
+    """
     p_goal = np.array(target_xyz, dtype=float)
     v_cur  = np.zeros(3)
 
@@ -100,7 +104,10 @@ def _cart_go(robot: Franka, target_xyz, speed: float) -> None:
         v_cur[:] += alpha * (v_des - v_cur)
         return CartesianVelocities(v_cur.tolist() + [0.0, 0.0, 0.0])
 
-    robot.robot_control(cartesian_velocities_handle=cb)
+    if q7_target is not None:
+        robot.api.robot_control_j7_pinned(cb, q7_target)
+    else:
+        robot.robot_control(cartesian_velocities_handle=cb)
 
 
 # ── Execution ─────────────────────────────────────────────────────────────────
@@ -113,10 +120,13 @@ def execute(robot, npz_path: str, palette_cal: dict, canvas: dict,
     curves       = data["curves"]
     slots        = data["slots"]
 
+    q7 = J7_PIN   # held throughout entire painting flow
+
     n_paint = int(np.sum(action_types == ACTION_PAINT))
     n_dip   = int(np.sum(action_types == ACTION_DIP))
     n_wash  = int(np.sum(action_types == ACTION_WASH))
     print(f"\n  序列: {n_actions} 动作  ({n_paint} paint / {n_dip} dip / {n_wash} wash)")
+    print(f"  J7 pinned = {q7:.4f} rad")
     if dry_run:
         print("  [DRY RUN]\n")
 
@@ -168,13 +178,13 @@ def execute(robot, npz_path: str, palette_cal: dict, canvas: dict,
                 continue
 
             # Transit to hover above stroke start
-            _cart_go(robot, p0_hov, TRANSIT_SPEED)
+            _cart_go(robot, p0_hov, TRANSIT_SPEED, q7)
             # Descend to canvas
-            _cart_go(robot, p0, PAINT_SPEED)
+            _cart_go(robot, p0, PAINT_SPEED, q7)
             # Draw stroke
-            _cart_go(robot, p1, PAINT_SPEED)
+            _cart_go(robot, p1, PAINT_SPEED, q7)
             # Lift off
-            _cart_go(robot, p1_hov, PAINT_SPEED)
+            _cart_go(robot, p1_hov, PAINT_SPEED, q7)
             at_hover = True
 
     if not dry_run:

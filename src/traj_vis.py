@@ -530,15 +530,151 @@ def plot_stroke(npz_info: dict, stroke_idx: int, out_path: str) -> None:
     plt.close()
 
 
+# ── Stroke-by-stroke accumulation video ──────────────────────────────────────
+
+def save_accumulation_frames(npz_info: dict, out_dir: str) -> None:
+    """Save stroke-by-stroke accumulation as a directory of PNG frames.
+
+    Each frame_NNNN.png shows all strokes up to and including stroke N.
+    A small colour swatch in the top-right corner shows the current colour.
+    The first frame after a colour change carries a labelled colour strip.
+    Supports cobrush_pro and brushlegacy_v2 formats.
+    """
+    import math
+    import cv2
+    from pathlib import Path
+
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+
+    def _draw_stroke(canvas, pts_float, color_rgb, bw):
+        r, g, b = color_rgb
+        pts = np.asarray(pts_float, dtype=np.float32)
+        cx = float(pts[:, 0].mean())
+        cy = float(pts[:, 1].mean())
+        dx = float(pts[1, 0] - pts[0, 0])
+        dy = float(pts[1, 1] - pts[0, 1])
+        length = math.hypot(dx, dy) * 2
+        angle  = math.degrees(math.atan2(dy, dx))
+        rect = ((cx, cy), (max(4.0, length), max(4.0, bw)), angle)
+        box  = cv2.boxPoints(rect).astype(np.int32)
+        cv2.fillPoly(canvas, [box], (r, g, b))
+
+    def _annotate(frame, color_rgb, W, color_changed, label=""):
+        r, g, b = color_rgb
+        sw = 22
+        # Colour swatch — top-right corner
+        cv2.rectangle(frame, (W - sw - 2, 2), (W - 2, sw + 2), (r, g, b), -1)
+        cv2.rectangle(frame, (W - sw - 2, 2), (W - 2, sw + 2), (60, 60, 60), 1)
+        # Colour-change strip — top-left band (first frame of new colour)
+        if color_changed:
+            cv2.rectangle(frame, (0, 0), (W - sw - 6, 24), (r, g, b), -1)
+            lum = 0.299 * r + 0.587 * g + 0.114 * b
+            tc  = (0, 0, 0) if lum > 140 else (255, 255, 255)
+            text = f"color change → {label}" if label else f"color change → #{r:02x}{g:02x}{b:02x}"
+            cv2.putText(frame, text, (4, 17),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, tc, 1, cv2.LINE_AA)
+
+    def _save(frame_rgb, idx):
+        cv2.imwrite(str(out / f"frame_{idx:04d}.png"), frame_rgb[:, :, ::-1])
+
+    fmt = npz_info.get("format", "")
+
+    # ── cobrush_pro ───────────────────────────────────────────────────────────
+    if fmt == "cobrush_pro":
+        curves      = npz_info["curves"]
+        colors_list = npz_info["colors"]
+        widths      = npz_info.get("widths", [6.0] * len(curves))
+        W  = npz_info["canvas_width"]
+        H  = npz_info["canvas_height"]
+        n  = len(curves)
+
+        if colors_list:
+            mean_c = np.array(colors_list).mean(axis=0).round().astype(np.uint8)
+        else:
+            mean_c = np.array([245, 245, 245], dtype=np.uint8)
+        canvas = np.tile(mean_c, (H, W, 1))
+
+        prev_color = None
+        for i, (curve, color, width) in enumerate(zip(curves, colors_list, widths)):
+            rgb = (int(color[0]), int(color[1]), int(color[2]))
+            _draw_stroke(canvas, curve, rgb, float(width))
+            frame = canvas.copy()
+            changed = (prev_color is not None and rgb != prev_color)
+            _annotate(frame, rgb, W, changed)
+            _save(frame, i)
+            prev_color = rgb
+
+        print(f"[vis] {n} frames → {out}/")
+
+    # ── brushlegacy_v2 ────────────────────────────────────────────────────────
+    elif fmt == "brushlegacy_v2":
+        ACTION_PAINT, ACTION_DIP = 0, 1
+
+        types  = npz_info["action_types"]
+        curves = npz_info["curves"]
+        colors = npz_info["colors"]
+        widths = npz_info["widths"]
+        W      = npz_info["canvas_width"]
+        H      = npz_info["canvas_height"]
+        n_all  = npz_info["n"]
+
+        pal_names = npz_info.get("palette_names")
+        if pal_names is None:
+            try:
+                from palette_cfg import PALETTE_NAMES
+                pal_names = np.array(PALETTE_NAMES, dtype=object)
+            except ImportError:
+                pal_names = None
+
+        def _sname(slot):
+            if pal_names is not None and slot < len(pal_names):
+                return str(pal_names[slot])
+            return f"slot{slot}"
+
+        canvas = np.full((H, W, 3), 245, dtype=np.uint8)
+        frame_idx       = 0
+        current_slot    = -1
+        last_paint_slot = -1
+
+        for i in range(n_all):
+            atype = int(types[i])
+            slot  = int(slots[i]) if "slots" in npz_info else -1
+
+            if atype == ACTION_DIP:
+                current_slot = slot
+
+            elif atype == ACTION_PAINT:
+                slots_arr = npz_info["slots"]
+                slot      = int(slots_arr[i])
+                r, g, b   = int(colors[i, 0]), int(colors[i, 1]), int(colors[i, 2])
+                _draw_stroke(canvas, curves[i], (r, g, b), float(widths[i]))
+                frame   = canvas.copy()
+                changed = (current_slot != last_paint_slot and last_paint_slot != -1)
+                _annotate(frame, (r, g, b), W, changed, _sname(current_slot))
+                _save(frame, frame_idx)
+                last_paint_slot = current_slot
+                frame_idx += 1
+
+        n_paint = sum(1 for t in types if int(t) == ACTION_PAINT)
+        print(f"[vis] {n_paint} frames → {out}/")
+
+    else:
+        print(f"[ERROR] save_accumulation_frames: unsupported format '{fmt}'"
+              f" (supported: cobrush_pro, brushlegacy_v2)")
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────────
 
 def main():
     p = argparse.ArgumentParser(description="Visualise robot trajectory NPZ")
-    p.add_argument("--npz",    required=True, help="Trajectory NPZ file")
-    p.add_argument("--stroke", type=int, default=None,
+    p.add_argument("--npz",     required=True, help="Trajectory NPZ file")
+    p.add_argument("--stroke",  type=int, default=None,
                    help="Detail view for one stroke index (omit for overview)")
-    p.add_argument("--show",   action="store_true",
+    p.add_argument("--show",    action="store_true",
                    help="Show interactive window (requires display)")
+    p.add_argument("--frames", action="store_true",
+                   help="Save stroke-by-stroke PNG frames to <stem>_frames/ directory")
     args = p.parse_args()
 
     if args.show:
@@ -554,18 +690,25 @@ def main():
         n_paint = sum(1 for t in npz_info["action_types"] if int(t) == 0)
         print(f"[NPZ] {npz_path.name}  format={format_}  "
               f"{npz_info['n']} actions  ({n_paint} paint)")
+        import cv2  # noqa: F401 — needed by plot_brushlegacy_v2 and save_accumulation_frames
         out = npz_path.parent / f"{stem}_overview.png"
-        import cv2  # noqa: F401 — needed by plot_brushlegacy_v2
         plot_brushlegacy_v2(npz_info, str(out))
+        if args.frames:
+            frames_dir = npz_path.parent / f"{stem}_frames"
+            save_accumulation_frames(npz_info, str(frames_dir))
         if args.show:
             plt.show()
         return
 
     # ── Cobrush Pro pixel-space format ───────────────────────────────────────
     if format_ == "cobrush_pro":
+        import cv2  # noqa: F401 — needed by plot_cobrush_pro and save_accumulation_frames
         print(f"[NPZ] {npz_path.name}  format={format_}  {len(npz_info['curves'])} curves")
         out = npz_path.parent / f"{stem}_overview.png"
         plot_cobrush_pro(npz_info, str(out))
+        if args.frames:
+            frames_dir = npz_path.parent / f"{stem}_frames"
+            save_accumulation_frames(npz_info, str(frames_dir))
         if args.show:
             plt.show()
         return
