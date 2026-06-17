@@ -12,6 +12,8 @@ canvas:
   height_px: 512
   width_mm: 480        # physical canvas width  (mm)
   height_mm: 480       # physical canvas height (mm)
+  tilt_x: 0.0          # dz/dx slope (m/m); 0 = use canvas.npy calibration only
+  tilt_y: 0.0          # dz/dy slope (m/m); 0 = use canvas.npy calibration only
 
 # PaintTransformer inference
 stroke:
